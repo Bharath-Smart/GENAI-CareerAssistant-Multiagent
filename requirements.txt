@@ -1,17 +1,25 @@
-pypdf
-langchain
-langgraph
-langchain-openai
-langchain-groq
-python-dotenv
-linkedin-api
-streamlit
-langsmith
-streamlit_chat
-streamlit_pills
-langchain_community
-firecrawl-py
-pymupdf
-streamlit-analytics2
-python-docx
-asgiref
+# Core LLM stack (vulnerable to breaking changes)
+langchain==0.3.26
+langchain-core==0.3.66
+langchain-community==0.3.26
+langchain-openai==0.3.25
+langchain-groq==0.3.4
+langgraph==0.4.9
+langsmith==0.4.1
+
+# Project functionality
+streamlit==1.46.0
+streamlit-chat==0.1.1
+streamlit-pills==0.3.0
+streamlit-analytics2==0.10.5
+python-dotenv==1.1.1
+linkedin-api==2.3.1
+firecrawl-py==2.9.0
+pypdf==5.6.1
+PyMuPDF==1.26.1
+python-docx==1.2.0
+
+# Utility packages
+pandas
+requests
+protobuf

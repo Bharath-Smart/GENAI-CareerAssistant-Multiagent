@@ -1,95 +1,149 @@
-from typing import Callable, TypeVar
+"""
+app.py
+
+Streamlit frontend for the GenAI Career Assistant. 
+This file sets up the UI, handles environment variables, loads the multi-agent LangGraph, 
+and manages interactions between the user and agents.
+
+Key features:
+- Resume upload and fallback to dummy resume
+- Query options via UI pills and text input
+- Multi-agent routing powered by LangGraph (ResumeAnalyzer, JobSearcher, etc.)
+- Support for both OpenAI and Groq APIs
+- Callback streaming and interaction history tracking
+
+Run this file using `streamlit run app.py` to launch the assistant.
+"""
+
+# -------------------- IMPORTS --------------------
+# Standard Library
 import os
+import shutil
 import inspect
+from typing import Callable, TypeVar
+
+# Environment & Configuration
+from dotenv import load_dotenv 
+
+# Streamlit & UI Libraries
 import streamlit as st
 import streamlit_analytics2 as streamlit_analytics
-from dotenv import load_dotenv
 from streamlit_chat import message
 from streamlit_pills import pills
-from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+from streamlit.runtime.scriptrunner import (
+    add_script_run_ctx,
+    get_script_run_ctx
+)
 from streamlit.delta_generator import DeltaGenerator
-from langchain_community.chat_message_histories import StreamlitChatMessageHistory
-from custom_callback_handler import CustomStreamlitCallbackHandler
-from agents import define_graph
-import shutil
 
+# LangChain / LangGraph
+from langchain_community.chat_message_histories import StreamlitChatMessageHistory
+
+# Internal Modules
+from agents import define_graph
+from custom_callback_handler import CustomStreamlitCallbackHandler
+
+# -------------------- ENVIRONMENT SETUP --------------------
 load_dotenv()
 
-# Set environment variables from Streamlit secrets or .env
-os.environ["LINKEDIN_EMAIL"] = st.secrets.get("LINKEDIN_EMAIL", "")
-os.environ["LINKEDIN_PASS"] = st.secrets.get("LINKEDIN_PASS", "")
-os.environ["LANGCHAIN_API_KEY"] = st.secrets.get("LANGCHAIN_API_KEY", "")
-os.environ["LANGCHAIN_TRACING_V2"] = os.getenv("LANGCHAIN_TRACING_V2") or st.secrets.get("LANGCHAIN_TRACING_V2", "")
-os.environ["LANGCHAIN_PROJECT"] = st.secrets.get("LANGCHAIN_PROJECT", "")
-os.environ["GROQ_API_KEY"] = st.secrets.get("GROQ_API_KEY", "")
-os.environ["SERPER_API_KEY"] = st.secrets.get("SERPER_API_KEY", "")
-os.environ["FIRECRAWL_API_KEY"] = st.secrets.get("FIRECRAWL_API_KEY", "")
-os.environ["LINKEDIN_SEARCH"] = st.secrets.get("LINKEDIN_JOB_SEARCH", "")
+# Use secrets or fallback to .env values
+def set_env_var(key):
+    os.environ[key] = st.secrets.get(key, os.getenv(key, ""))
 
-# Page configuration
+env_keys = [
+    "LINKEDIN_EMAIL", "LINKEDIN_PASS", "LANGCHAIN_API_KEY",
+    "LANGCHAIN_TRACING_V2", "LANGCHAIN_PROJECT", "GROQ_API_KEY",
+    "SERPER_API_KEY", "FIRECRAWL_API_KEY", "LINKEDIN_JOB_SEARCH"
+]
+for key in env_keys:
+    set_env_var(key)
+
+# -------------------- STREAMLIT PAGE SETUP --------------------
 st.set_page_config(layout="wide")
 st.title("GenAI Career Assistant - 👨‍💼")
-st.markdown("[Connect with me on LinkedIn](https://www.linkedin.com/in/aman-varyani-885725181/)")
 
 streamlit_analytics.start_tracking()
 
+# -------------------- FILE MANAGEMENT --------------------
 # Setup directories and paths
 temp_dir = "temp"
 dummy_resume_path = os.path.abspath("dummy_resume.pdf")
+ORIGINAL_DUMMY_LINK = "https://drive.google.com/file/d/1vTdtIPXEjqGyVgUgCO6HLiG9TSPcJ5eM/view?usp=sharing"
 
-if not os.path.exists(temp_dir):
-    os.makedirs(temp_dir)
+# Track whether original dummy is being used
+using_original_dummy = True
 
-# Add dummy resume if it does not exist
+# Add dummy resume if it does not exist i.e, you (developer) deleted it
 if not os.path.exists(dummy_resume_path):
-    default_resume_path = "path/to/your/dummy_resume.pdf"
-    shutil.copy(default_resume_path, dummy_resume_path)
+    DEFAULT_DUMMY_PATH = "path/to/your/dummy_resume.pdf"  # Use your own resume file (local path)
+    CUSTOM_DUMMY_LINK = ""  # Optional: If using custom dummy resume, you may provide a viewable link
+    
+    for pdf in os.listdir():
+        if pdf.endswith(".pdf") and pdf != "dummy_resume.pdf":
+            shutil.copy(pdf, dummy_resume_path)  # Replace dummy with user's PDF
+            os.remove(pdf)
+            break
+    else:
+        shutil.copy(DEFAULT_DUMMY_PATH, dummy_resume_path)
 
-# Sidebar - File Upload
+# Sidebar - Resume Upload
 uploaded_document = st.sidebar.file_uploader("Upload Your Resume", type="pdf")
 
+# If not uploaded, use dummy
 if not uploaded_document:
     uploaded_document = open(dummy_resume_path, "rb")
-    st.sidebar.write("Using a dummy resume for demonstration purposes. ")
-    st.sidebar.markdown(f"[View Dummy Resume]({'https://drive.google.com/file/d/1vTdtIPXEjqGyVgUgCO6HLiG9TSPcJ5eM/view?usp=sharing'})", unsafe_allow_html=True)
+    st.sidebar.write("Using a dummy resume for demonstration purposes.")
     
-bytes_data = uploaded_document.read()
+    # Show appropriate link based on what dummy is being used
+    if using_original_dummy:
+        st.sidebar.markdown(f"[View Dummy Resume]({ORIGINAL_DUMMY_LINK})", unsafe_allow_html=True)
+    elif CUSTOM_DUMMY_LINK:
+        st.sidebar.markdown(f"[View Custom Resume]({CUSTOM_DUMMY_LINK})", unsafe_allow_html=True)
 
+if not os.path.exists(temp_dir):
+    os.makedirs(temp_dir)    
+
+# Save uploaded or dummy resume to temp
 filepath = os.path.join(temp_dir, "resume.pdf")
 with open(filepath, "wb") as f:
-    f.write(bytes_data)
+    f.write(uploaded_document.read())
 
 st.markdown("**Resume uploaded successfully!**")
 
-# Sidebar - Service Provider Selection
+# -------------------- MODEL CONFIGURATION --------------------
+# Sidebar: Choose between OpenAI or Groq
 service_provider = st.sidebar.selectbox(
     "Service Provider",
     ("groq (llama-3.1-70b-versatile)", "openai"),
 )
-streamlit_analytics.stop_tracking()
 
-# Not to track the key
+streamlit_analytics.stop_tracking()  # For not tracking the key
+
 if service_provider == "openai":
-    # Sidebar - OpenAI Configuration
+    # OpenAI API Key input (persisted using session_state)
     api_key_openai = st.sidebar.text_input(
         "OpenAI API Key",
         st.session_state.get("OPENAI_API_KEY", ""),
         type="password",
     )
+
+    # Choose OpenAI model
     model_openai = st.sidebar.selectbox(
         "OpenAI Model",
         ("gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"),
     )
+
+    # Store key in session and env for downstream use
+    st.session_state["OPENAI_API_KEY"] = os.environ["OPENAI_API_KEY"] = api_key_openai
+
     settings = {
         "model": model_openai,
         "model_provider": "openai",
         "temperature": 0.3,
     }
-    st.session_state["OPENAI_API_KEY"] = api_key_openai
-    os.environ["OPENAI_API_KEY"] = st.session_state["OPENAI_API_KEY"]
 
 else:
-    # Toggle visibility for Groq API Key input
+    # Toggle: Reveal Groq API key input field
     if "groq_key_visible" not in st.session_state:
         st.session_state["groq_key_visible"] = False
 
@@ -107,61 +161,47 @@ else:
         "temperature": 0.3,
     }
 
-# Sidebar - Service Provider Note
+# Info Note: Best experience with OpenAI
 st.sidebar.markdown(
     """
     **Note:** \n
-    This multi-agent system works best with OpenAI. llama 3.1 may not always produce optimal results.\n
-    Any key provided will not be stored or shared it will be used only for the current session.
+    This multi-agent system works best with OpenAI.\n
+    llama 3.1 may not always produce optimal results.\n
+    API keys are not stored — used only in your current session.
     """
-)
-st.sidebar.markdown(
-    """
-    <div style="padding:10px 0;">
-        If you like the project, give a 
-        <a href="https://github.com/amanv1906/GENAI-CareerAssistant-Multiagent" target="_blank" style="text-decoration:none;">
-            ⭐ on GitHub
-        </a>
-    </div>
-    """,
-    unsafe_allow_html=True,
 )
 
-# Create the agent flow
+# -------------------- SETUP AGENT GRAPH + SESSION STATE --------------------
 flow_graph = define_graph()
 message_history = StreamlitChatMessageHistory()
 
 # Initialize session state variables
-if "active_option_index" not in st.session_state:
-    st.session_state["active_option_index"] = None
-if "interaction_history" not in st.session_state:
-    st.session_state["interaction_history"] = []
-if "response_history" not in st.session_state:
-    st.session_state["response_history"] = ["Hello! How can I assist you today?"]
-if "user_query_history" not in st.session_state:
-    st.session_state["user_query_history"] = ["Hi there! 👋"]
+st.session_state.setdefault("active_option_index", None)
+st.session_state.setdefault("interaction_history", [])
+st.session_state.setdefault("response_history", ["Hello! How can I assist you today?"])
+st.session_state.setdefault("user_query_history", ["Hi there! 👋"])
 
 # Containers for the chat interface
 conversation_container = st.container()
 input_section = st.container()
 
-# Define functions used above
+# -------------------- CALLBACK WRAPPER --------------------
 def initialize_callback_handler(main_container: DeltaGenerator):
     V = TypeVar("V")
 
     def wrap_function(func: Callable[..., V]) -> Callable[..., V]:
-        context = get_script_run_ctx()
+        ctx = get_script_run_ctx()
 
-        def wrapped(*args, **kwargs) -> V:
-            add_script_run_ctx(ctx=context)
+        def wrapped(*args, **kwargs):
+            add_script_run_ctx(ctx)
             return func(*args, **kwargs)
-
+        
         return wrapped
 
     streamlit_callback_instance = CustomStreamlitCallbackHandler(
         parent_container=main_container
     )
-
+    
     for method_name, method in inspect.getmembers(
         streamlit_callback_instance, predicate=inspect.ismethod
     ):
@@ -169,37 +209,38 @@ def initialize_callback_handler(main_container: DeltaGenerator):
 
     return streamlit_callback_instance
 
+# -------------------- QUERY HANDLER --------------------
 def execute_chat_conversation(user_input, graph):
-    callback_handler_instance = initialize_callback_handler(st.container())
-    callback_handler = callback_handler_instance
+    callback = initialize_callback_handler(st.container())
+
     try:
-        output = graph.invoke(
+        result = graph.invoke(
             {
                 "messages": list(message_history.messages) + [user_input],
                 "user_input": user_input,
                 "config": settings,
-                "callback": callback_handler,
+                "callback": callback,
             },
-            {"recursion_limit": 30},
+            {"recursion_limit": 30}
         )
-        message_output = output.get("messages")[-1]
-        messages_list = output.get("messages")
+        messages_list = result.get("messages")
+        message_output = messages_list[-1]
         message_history.clear()
         message_history.add_messages(messages_list)
-
-    except Exception as exc:
+    except Exception:
         return ":( Sorry, Some error occurred. Can you please try again?"
+    
     return message_output.content
 
-# Clear Chat functionality
+# -------------------- CHAT CLEAR BUTTON --------------------
 if st.button("Clear Chat"):
     st.session_state["user_query_history"] = []
     st.session_state["response_history"] = []
     message_history.clear()
-    st.rerun()  # Refresh the app to reflect the cleared chat
+    st.rerun() # Refresh the app to reflect the cleared chat
 
-# for tracking the query.
-streamlit_analytics.start_tracking()
+# -------------------- CHAT INPUT SECTION --------------------
+streamlit_analytics.start_tracking() # For tracking the query
 
 # Display chat interface
 with input_section:
@@ -211,18 +252,19 @@ with input_section:
         "GenAI Jobs at Microsoft",
         "Job Search GenAI jobs in India.",
         "Analyze my resume and suggest a suitable job role and search for relevant job listings",
-        "Generate a cover letter for my resume.",
+        "Generate a cover letter for my resume."
     ]
-    icons = ["🔍", "🌐", "📝", "📈", "💼", "🌟", "✉️", "🧠  "]
+    icons = ["🔍", "🌐", "📝", "📈", "💼", "🌟", "✉️", "🧠"]
 
     selected_query = pills(
         "Pick a question for query:",
         options,
-        clearable=None,  # type: ignore
+        clearable=None,
         icons=icons,
         index=st.session_state["active_option_index"],
         key="pills",
     )
+
     if selected_query:
         st.session_state["active_option_index"] = options.index(selected_query)
 
@@ -230,7 +272,7 @@ with input_section:
     with st.form(key="query_form", clear_on_submit=True):
         user_input_query = st.text_input(
             "Query:",
-            value=(selected_query if selected_query else "Detail analysis of latest layoff news India?"),
+            value=selected_query or "Detail analysis of latest layoff news India?",
             placeholder="📝 Write your query or select from the above",
             key="input",
         )
@@ -239,32 +281,24 @@ with input_section:
     if submit_query_button:
         if not uploaded_document:
             st.error("Please upload your resume before submitting a query.")
-
         elif service_provider == "openai" and not st.session_state["OPENAI_API_KEY"]:
             st.error("Please enter your OpenAI API key before submitting a query.")
-
         elif user_input_query:
-            # Process the query as usual if resume is uploaded
             chat_output = execute_chat_conversation(user_input_query, flow_graph)
             st.session_state["user_query_history"].append(user_input_query)
             st.session_state["response_history"].append(chat_output)
-            st.session_state["last_input"] = user_input_query  # Save the latest input
+            st.session_state["last_input"] = user_input_query
             st.session_state["active_option_index"] = None
 
-# Display chat history
+# -------------------- CHAT DISPLAY SECTION --------------------
 if st.session_state["response_history"]:
     with conversation_container:
-        for i in range(len(st.session_state["response_history"])):
+        for i, response in enumerate(st.session_state["response_history"]):
             message(
-                st.session_state["user_query_history"][i],
-                is_user=True,
-                key=str(i) + "_user",
-                avatar_style="fun-emoji",
-            )
-            message(
-                st.session_state["response_history"][i],
-                key=str(i),
-                avatar_style="bottts",
-            )
+                st.session_state["user_query_history"][i], 
+                is_user=True, 
+                key=f"{i}_user", 
+                avatar_style="fun-emoji")
+            message(response, key=str(i), avatar_style="bottts")
 
 streamlit_analytics.stop_tracking()

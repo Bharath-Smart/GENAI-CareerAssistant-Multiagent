@@ -1,9 +1,20 @@
-from ast import List
+"""
+schemas.py
+
+Defines Pydantic data models for validating agent inputs and controlling routing decisions in the LangGraph workflow.
+"""
+
+# -------------------- IMPORTS --------------------
+# Standard Library
 from typing import Literal, Optional, List, Union
+
+# Third-Party Libraries
 from pydantic import BaseModel, Field
 
 
 class RouteSchema(BaseModel):
+    """Used by the supervisor to decide which agent to route to next."""
+    
     next_action: Literal[
         "ResumeAnalyzer",
         "CoverLetterGenerator",
@@ -12,57 +23,62 @@ class RouteSchema(BaseModel):
         "ChatBot",
         "Finish",
     ] = Field(
-        ...,
+        ...,  # Required field (no default)
         title="Next",
         description="Select the next role",
     )
 
 
 class JobSearchInput(BaseModel):
+    """Schema for user-defined job search parameters."""
+
     keywords: str = Field(
-        description="Keywords describing the job role. (if the user is looking for a role in particular company then pass company with keywords)"
+        description="Keywords describing the job role. If the user is targeting a company, include the company name in keywords."
     )
+
     location_name: Optional[str] = Field(
-        description='Name of the location to search within. Example: "Kyiv City, Ukraine".'
+        description='Location to search within. Example: "Kyiv City, Ukraine".'
     )
+
     employment_type: Optional[
         List[
             Literal[
-                "full-time",
-                "contract",
-                "part-time",
-                "temporary",
-                "internship",
-                "volunteer",
-                "other",
-            ]
-        ]
-    ] = Field(description="Specific type(s) of job to search for.")
-    limit: Optional[int] = Field(
-        default=5, description="Maximum number of jobs to retrieve."
-    )
-    job_type: Optional[List[Literal["onsite", "remote", "hybrid"]]] = Field(
-        description="Filter for remote jobs, onsite or hybrid"
-    )
-    experience: Optional[
-        List[
-            Literal[
-                "internship",
-                "entry-level",
-                "associate",
-                "mid-senior-level",
-                "director",
-                "executive",
+                "full-time", "contract", "part-time", "temporary",
+                "internship", "volunteer", "other"
             ]
         ]
     ] = Field(
-        description='Filter by experience levels. Options are "internship", "entry level", "associate", "mid-senior level", "director", "executive". pass the exact arguments'
+        description="Types of employment to filter by (can be multiple)."
     )
+
+    limit: Optional[int] = Field(
+        default=5,
+        description="Max number of jobs to retrieve (default is 5)."
+    )
+
+    job_type: Optional[
+        List[Literal["onsite", "remote", "hybrid"]]
+    ] = Field(
+        description="Filter based on job type (remote, onsite, hybrid)."
+    )
+
+    experience: Optional[
+        List[
+            Literal[
+                "internship", "entry-level", "associate",
+                "mid-senior-level", "director", "executive"
+            ]
+        ]
+    ] = Field(
+        description="Experience levels to filter by. Use exact terms listed."
+    )
+
     listed_at: Optional[Union[int, str]] = Field(
         default=86400,
-        description="Maximum number of seconds passed since job posting. 86400 will filter job postings posted in the last 24 hours.",
+        description="Job postings created within the last N seconds. (e.g. 86400 = last 24 hours)"
     )
+
     distance: Optional[Union[int, str]] = Field(
         default=25,
-        description="Maximum distance from location in miles. If not specified or 0, the default value of 25 miles is applied.",
+        description="Max distance from location in miles. Default is 25 miles."
     )
