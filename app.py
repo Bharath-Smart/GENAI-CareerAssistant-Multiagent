@@ -20,6 +20,7 @@ Run this file using `streamlit run app.py` to launch the assistant.
 import os
 import shutil
 import inspect
+import traceback
 from typing import Callable, TypeVar
 
 # Environment & Configuration
@@ -224,13 +225,26 @@ def execute_chat_conversation(user_input, graph):
             {"recursion_limit": 30}
         )
         messages_list = result.get("messages")
-        message_output = messages_list[-1]
+        message_output = messages_list[-1] if messages_list else {"content": "No response."}
+
+        # Safely extract message content
+        if isinstance(message_output, str):
+            final_content = message_output
+        elif isinstance(message_output, dict) and "content" in message_output:
+            final_content = message_output["content"]
+        elif hasattr(message_output, "content"):
+            final_content = message_output.content
+        else:
+            final_content = str(message_output)
+            
         message_history.clear()
         message_history.add_messages(messages_list)
-    except Exception:
+    except Exception as e:
+        print("🚨 Exception during chat execution:", e)
+        traceback.print_exc()
         return ":( Sorry, Some error occurred. Can you please try again?"
-    
-    return message_output.content
+
+    return final_content
 
 # -------------------- CHAT CLEAR BUTTON --------------------
 if st.button("Clear Chat"):

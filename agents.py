@@ -8,6 +8,7 @@ and this module builds the full workflow pipeline for coordinating them via a Su
 # -------------------- IMPORTS --------------------
 # Standard Library
 from typing import Any, TypedDict
+import asyncio
 
 # Environment & Configuration
 from dotenv import load_dotenv
@@ -23,8 +24,8 @@ from langgraph.graph import StateGraph, END
 # Internal Modules
 from chains import get_finish_chain, get_supervisor_chain
 from tools import (
-    get_job_search_tool,
-    ResumeExtractorTool,
+    extract_resume,    
+    job_search_tool,
     generate_letter_for_specific_job,
     get_google_search_results,
     save_cover_letter_for_specific_job,
@@ -40,6 +41,14 @@ from prompts import (
 # -------------------- ENVIRONMENT SETUP --------------------
 load_dotenv()
 
+# -------------------- AGENT STATE --------------------
+class AgentState(TypedDict):
+    user_input: str
+    messages: list[BaseMessage]
+    next_step: str
+    config: dict
+    callback: Any
+    
 # -------------------- AGENT CREATION --------------------
 def create_agent(llm: ChatOpenAI, tools: list, system_prompt: str):
     """
@@ -62,7 +71,7 @@ def create_agent(llm: ChatOpenAI, tools: list, system_prompt: str):
     return AgentExecutor(agent=agent, tools=tools)
 
 # -------------------- GRAPH NODES --------------------
-def supervisor_node(state):
+def supervisor_node(state: AgentState) -> AgentState:
     """
     Supervisor node: Routes input to the next agent based on system decision.
     """
@@ -78,29 +87,14 @@ def supervisor_node(state):
     state["messages"] = chat_history
     return state
 
-def job_search_node(state):
+def resume_analyzer_node(state: AgentState) -> AgentState:
     """
-    Handles job search using LinkedIn (or similar APIs).
-    Tools: Job Search Tool.
-    """
-    chat_history = state.get("messages", [])
-    llm = init_chat_model(**state["config"])
-    search_agent = create_agent(llm, [get_job_search_tool()], get_search_agent_prompt_template())
-    state["callback"].write_agent_name("JobSearcher Agent 💼")
-
-    output = search_agent.invoke({"messages": chat_history}, {"callbacks": [state["callback"]]})
-    chat_history.append(HumanMessage(content=output.get("output"), name="JobSearcher"))
-    state["messages"] = chat_history
-    return state
-
-def resume_analyzer_node(state):
-    """
-    Extracts and analyzes resume content.
+    Extracts & analyzes resume content and suggest suitable job role(s).
     Tools: Resume Extractor.
     """
     chat_history = state.get("messages", [])
     llm = init_chat_model(**state["config"])
-    analyzer_agent = create_agent(llm, [ResumeExtractorTool()], get_analyzer_agent_prompt_template())
+    analyzer_agent = create_agent(llm, [extract_resume], get_analyzer_agent_prompt_template())
     state["callback"].write_agent_name("ResumeAnalyzer Agent 📄")
 
     output = analyzer_agent.invoke({"messages": chat_history}, {"callbacks": [state["callback"]]})
@@ -108,7 +102,24 @@ def resume_analyzer_node(state):
     state["messages"] = chat_history
     return state
 
-def cover_letter_generator_node(state):
+def job_search_node(state: AgentState) -> AgentState:
+    """
+    Handles job search using LinkedIn (or similar APIs).
+    Tools: Job Search Tool.
+    """
+    chat_history = state.get("messages", [])
+    llm = init_chat_model(**state["config"])
+    search_agent = create_agent(llm, [job_search_tool], get_search_agent_prompt_template())
+    state["callback"].write_agent_name("JobSearcher Agent 💼")
+
+    # Convert async tool call to sync using asyncio.run
+    output = asyncio.run(search_agent.ainvoke({"messages": chat_history}, {"callbacks": [state["callback"]]}))
+    
+    chat_history.append(HumanMessage(content=output.get("output"), name="JobSearcher"))
+    state["messages"] = chat_history
+    return state
+
+def cover_letter_generator_node(state: AgentState) -> AgentState:
     """
     Generates personalized cover letters.
     Tools: Cover Letter Generator, Cover Letter Saver, Resume Extractor.
@@ -118,9 +129,9 @@ def cover_letter_generator_node(state):
     generator_agent = create_agent(
         llm,
         [
-            generate_letter_for_specific_job,
-            save_cover_letter_for_specific_job,
-            ResumeExtractorTool(),
+            extract_resume,                         # Step 1 (if resume not present)
+            generate_letter_for_specific_job,       # Step 2 (generate content)
+            save_cover_letter_for_specific_job      # Step 3 (store it)
         ],
         get_generator_agent_prompt_template(),
     )
@@ -131,7 +142,7 @@ def cover_letter_generator_node(state):
     state["messages"] = chat_history
     return state
 
-def web_research_node(state):
+def web_research_node(state: AgentState) -> AgentState:
     """
     Performs online research via Google Search and Firecrawl.
     Tools: Web Search Tool, Web Scraper.
@@ -141,7 +152,7 @@ def web_research_node(state):
     research_agent = create_agent(
         llm,
         [get_google_search_results, scrape_website],
-        researcher_agent_prompt_template(),
+        get_researcher_agent_prompt_template(),
     )
     state["callback"].write_agent_name("WebResearcher Agent 🔍")
 
@@ -150,7 +161,7 @@ def web_research_node(state):
     state["messages"] = chat_history
     return state
 
-def chatbot_node(state):
+def chatbot_node(state: AgentState) -> AgentState:
     """
     Handles fallback/general chatbot conversation.
     Tools: Final fallback LLM (ChatBot Agent 🤖).
@@ -192,11 +203,3 @@ def define_graph():
     workflow.add_conditional_edges("Supervisor", lambda x: x["next_step"], conditional_map)
 
     return workflow.compile()
-
-# -------------------- AGENT STATE --------------------
-class AgentState(TypedDict):
-    user_input: str
-    messages: list[BaseMessage]
-    next_step: str
-    config: dict
-    callback: Any

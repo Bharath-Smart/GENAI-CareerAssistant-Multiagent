@@ -9,40 +9,85 @@ cover letter generation, web scraping, and Google (Serper) search.
 # Standard Library
 import os
 import asyncio
-from typing import List, Union
+from typing import Literal, List, Union, Optional
 
 # Environment & Configuration
 from dotenv import load_dotenv
 
 # LangChain / LangGraph
-from langchain.pydantic_v1 import Field
-from langchain.tools import BaseTool, tool, StructuredTool
+from pydantic import Field
+from langchain_core.tools import tool, StructuredTool
 
 # Internal Modules
 from data_loader import load_resume, write_cover_letter_to_doc
-from schemas import JobSearchInput
+from schemas import JobSearchInput, GoogleSearchInput, ScrapeWebsiteInput
 from search import get_job_ids, fetch_all_jobs
 from utils import FireCrawlClient, SerperClient
 
 # -------------------- ENVIRONMENT SETUP --------------------
 load_dotenv()
 
+# -------------------- RESUME EXTRACTION TOOL --------------------
+@tool(name_or_callable = "extract_resume_tool")
+def extract_resume() -> str:
+    """
+    Extracts text content from the uploaded resume (PDF) stored at 'temp/resume.pdf'.
+    This tool assumes the resume has already been uploaded and saved.
+    
+    Returns:
+        str: Resume text (combined content from all pages) used for LLM analysis.       
+    """
+        
+    return load_resume("temp/resume.pdf")
+
 # -------------------- JOB SEARCH TOOL --------------------
 async def linkedin_job_search(
     keywords: Union[str, List[str]],
-    location_name: str = None,
-    job_type: Union[str, List[str]] = None,
-    limit: int = 5,
-    employment_type: Union[str, List[str]] = None,
-    listed_at=None,
-    experience: Union[str, List[str]] = None,
-    distance=None,
-) -> dict:
+    location_name: Optional[str] = None,
+    employment_type: Optional[
+        List[
+            Literal[
+                "full-time", 
+                "contract", 
+                "part-time", 
+                "temporary",
+                "internship", 
+                "volunteer", 
+                "other"                
+            ]
+        ]
+    ] = None,
+    limit: Optional[int] = 5,
+    job_type: Optional[
+        List[
+            Literal[
+                "onsite", 
+                "remote", 
+                "hybrid"
+            ]
+        ]
+    ] = None,
+    experience: Optional[
+        List[
+            Literal[
+                "internship", 
+                "entry-level", 
+                "associate",
+                "mid-senior-level", 
+                "director", 
+                "executive"
+            ]
+        ]
+    ] = None,
+    listed_at: Optional[Union[int, str]] = 86400,
+    distance: Optional[Union[int, str]] = 25
+    
+) -> List[dict]:
     """
     Search LinkedIn for job postings based on specified criteria.
 
     Returns:
-        dict: Detailed job listings based on filters.
+        List[dict]: Detailed job listings based on filters.
     """
     job_ids = get_job_ids(
         keywords=keywords,
@@ -56,38 +101,12 @@ async def linkedin_job_search(
     )
     return await fetch_all_jobs(job_ids)
 
-
-def get_job_search_tool():
-    """
-    Create a structured async tool for LangChain JobPipeline.
-
-    Returns:
-        StructuredTool: LangChain-compatible async tool wrapper.
-    """
-    return StructuredTool.from_function(
-        func=linkedin_job_search,
+job_search_tool = StructuredTool.from_function(
         name="JobSearchTool",
         description="Search LinkedIn for job postings based on specified criteria. Returns detailed job listings.",
         args_schema=JobSearchInput,
         coroutine=linkedin_job_search,
     )
-
-# -------------------- RESUME EXTRACTION TOOL --------------------
-class ResumeExtractorTool(BaseTool):
-    """
-    Extracts the resume content from the uploaded PDF file.
-
-    Returns:
-        dict: Parsed resume content (skills, experience, etc.).
-    """
-    name: str = "ResumeExtractor"
-    description: str = "Extract the content of uploaded resume from a PDF file."
-
-    def extract_resume(self) -> str:
-        return load_resume("temp/resume.pdf")
-
-    def _run(self) -> dict:
-        return self.extract_resume()
 
 # -------------------- COVER LETTER TOOLS --------------------
 @tool
@@ -99,7 +118,6 @@ def generate_letter_for_specific_job(resume_details: str, job_details: str) -> d
         dict: Merged inputs for the cover letter generator.
     """
     return {"job_details": job_details, "resume_details": resume_details}
-
 
 @tool
 def save_cover_letter_for_specific_job(cover_letter_content: str, company_name: str) -> str:
@@ -118,8 +136,8 @@ def save_cover_letter_for_specific_job(cover_letter_content: str, company_name: 
     return f"Here is the download link: {os.path.abspath(file)}"
 
 # -------------------- WEB SEARCH TOOLS --------------------
-@tool("google_search")
-def get_google_search_results(query: str = Field(..., description="Search query for web")) -> str:
+@tool(name_or_callable = "google_search_tool", args_schema = GoogleSearchInput)
+def get_google_search_results(query: str) -> str:
     """
     Perform a Google-like search using Serper API.
 
@@ -148,9 +166,8 @@ def get_google_search_results(query: str = Field(..., description="Search query 
 
     return "\n".join(results)
 
-
-@tool("scrape_website")
-def scrape_website(url: str = Field(..., description="Url to be scraped")) -> str:
+@tool(name_or_callable = "scrape_website_tool", args_schema = ScrapeWebsiteInput)
+def scrape_website(url: str) -> str:
     """
     Scrape the main text content of a website using FireCrawl API.
 

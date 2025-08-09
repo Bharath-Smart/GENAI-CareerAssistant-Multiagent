@@ -30,13 +30,13 @@ class SerperClient:
         self.serper_api_key = serper_api_key
 
     def search(self, query: str, num_results: int = 5) -> dict:
-        """Perform a Google search and return results in a standard format."""
-        response = GoogleSerperAPIWrapper(k=num_results).results(query=query)
+        """Perform a Google search and return results in a standardized format."""
+        wrapper = GoogleSerperAPIWrapper(serper_api_key=self.serper_api_key, k=num_results)
+        response = wrapper.results(query=query)
 
         # Normalize response format
         response["items"] = response.pop("organic", [])
         return response
-
 
 # -------------------- FIRECRAWL CLIENT --------------------
 class FireCrawlClient:
@@ -46,12 +46,12 @@ class FireCrawlClient:
         self.firecrawl_api_key = firecrawl_api_key
 
     def scrape(self, url: str) -> str:
-        """Scrape webpage content for a given URL (max 10,000 chars)."""
-        docs = FireCrawlLoader(api_key=self.firecrawl_api_key, url=url, mode="scrape").lazy_load()
+        """Scrape webpage content for a given URL (up to 10,000 characters)."""
+        docs = FireCrawlLoader(
+            api_key=self.firecrawl_api_key,
+            url=url,
+            mode="scrape"
+        ).lazy_load()
 
-        page_content = ""
-        for doc in docs:
-            page_content += doc.page_content
-
-        # limit to 10,000 characters
+        page_content = "".join(doc.page_content for doc in docs)
         return page_content[:10000]
