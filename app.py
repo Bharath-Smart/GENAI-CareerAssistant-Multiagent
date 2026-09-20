@@ -9,22 +9,23 @@ from streamlit_pills import pills
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 from streamlit.delta_generator import DeltaGenerator
 from langchain_community.chat_message_histories import StreamlitChatMessageHistory
+from langchain_core.messages import HumanMessage
 from custom_callback_handler import CustomStreamlitCallbackHandler
 from agents import define_graph
 import shutil
 
 load_dotenv()
 
-# Set environment variables from Streamlit secrets or .env
-os.environ["LINKEDIN_EMAIL"] = st.secrets.get("LINKEDIN_EMAIL", "")
-os.environ["LINKEDIN_PASS"] = st.secrets.get("LINKEDIN_PASS", "")
-os.environ["LANGCHAIN_API_KEY"] = st.secrets.get("LANGCHAIN_API_KEY", "")
-os.environ["LANGCHAIN_TRACING_V2"] = os.getenv("LANGCHAIN_TRACING_V2") or st.secrets.get("LANGCHAIN_TRACING_V2", "")
-os.environ["LANGCHAIN_PROJECT"] = st.secrets.get("LANGCHAIN_PROJECT", "")
-os.environ["GROQ_API_KEY"] = st.secrets.get("GROQ_API_KEY", "")
-os.environ["SERPER_API_KEY"] = st.secrets.get("SERPER_API_KEY", "")
-os.environ["FIRECRAWL_API_KEY"] = st.secrets.get("FIRECRAWL_API_KEY", "")
-os.environ["LINKEDIN_SEARCH"] = st.secrets.get("LINKEDIN_JOB_SEARCH", "")
+# Load configuration from .env
+os.environ["LINKEDIN_EMAIL"] = os.getenv("LINKEDIN_EMAIL", "")
+os.environ["LINKEDIN_PASS"] = os.getenv("LINKEDIN_PASS", "")
+os.environ["LANGCHAIN_API_KEY"] = os.getenv("LANGCHAIN_API_KEY", "")
+os.environ["LANGCHAIN_TRACING_V2"] = os.getenv("LANGCHAIN_TRACING_V2", "")
+os.environ["LANGCHAIN_PROJECT"] = os.getenv("LANGCHAIN_PROJECT", "")
+os.environ["GROQ_API_KEY"] = os.getenv("GROQ_API_KEY", "")
+os.environ["SERPER_API_KEY"] = os.getenv("SERPER_API_KEY", "")
+os.environ["FIRECRAWL_API_KEY"] = os.getenv("FIRECRAWL_API_KEY", "")
+os.environ["LINKEDIN_SEARCH"] = os.getenv("LINKEDIN_JOB_SEARCH", "")
 
 # Page configuration
 st.set_page_config(layout="wide")
@@ -78,7 +79,7 @@ if service_provider == "openai":
     )
     model_openai = st.sidebar.selectbox(
         "OpenAI Model",
-        ("gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"),
+        ("gpt-4o-mini"),
     )
     settings = {
         "model": model_openai,
@@ -175,7 +176,7 @@ def execute_chat_conversation(user_input, graph):
     try:
         output = graph.invoke(
             {
-                "messages": list(message_history.messages) + [user_input],
+                "messages": list(message_history.messages) + [HumanMessage(content=user_input)],
                 "user_input": user_input,
                 "config": settings,
                 "callback": callback_handler,
@@ -187,9 +188,9 @@ def execute_chat_conversation(user_input, graph):
         message_history.clear()
         message_history.add_messages(messages_list)
 
+        return message_output.content
     except Exception as exc:
         return ":( Sorry, Some error occurred. Can you please try again?"
-    return message_output.content
 
 # Clear Chat functionality
 if st.button("Clear Chat"):

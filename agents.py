@@ -1,5 +1,5 @@
 from typing import Any, TypedDict
-from langchain.agents import (
+from langchain_classic.agents import (
     AgentExecutor,
     create_openai_tools_agent,
 )
@@ -67,7 +67,23 @@ def supervisor_node(state):
     if not chat_history:
         chat_history.append(HumanMessage(state["user_input"]))
     output = supervisor_chain.invoke({"messages": chat_history})
-    state["next_step"] = output.next_action
+    next_action = output.next_action
+
+    # Guard against ending the workflow (Finish -> END) before any worker has
+    # ever processed the current user turn. The last message is still the raw,
+    # unprocessed HumanMessage (no `name`) that app.py just added for this turn
+    # in that case, so Finish would terminate the graph with nothing but the
+    # user's own message as output. ChatBot is the designated fallback worker
+    # for producing an actual conversational reply, so route there instead.
+    last_message = chat_history[-1]
+    if (
+        next_action == "Finish"
+        and isinstance(last_message, HumanMessage)
+        and not last_message.name
+    ):
+        next_action = "ChatBot"
+
+    state["next_step"] = next_action
     state["messages"] = chat_history
     return state
 
