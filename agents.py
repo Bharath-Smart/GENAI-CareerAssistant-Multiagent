@@ -1,18 +1,13 @@
-from typing import Any, TypedDict
-from langchain_classic.agents import (
-    AgentExecutor,
-    create_openai_tools_agent,
-)
+from typing import Any
+from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
-from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage, AIMessage
 
-from langgraph.graph import StateGraph, END
+from langgraph.graph import StateGraph, MessagesState, END
 from dotenv import load_dotenv
 from chains import get_finish_chain, get_supervisor_chain
 from tools import (
-    get_job_search_tool,
+    linkedin_job_search,
     ResumeExtractorTool,
     generate_letter_for_specific_job,
     get_google_search_results,
@@ -29,43 +24,13 @@ from prompts import (
 load_dotenv()
 
 
-def create_agent(llm: ChatOpenAI, tools: list, system_prompt: str):
-    """
-    Creates an agent using the specified ChatOpenAI model, tools, and system prompt.
-
-    Args:
-        llm : LLM to be used to create the agent.
-        tools (list): The list of tools to be given to the worker node.
-        system_prompt (str): The system prompt to be used in the agent.
-
-    Returns:
-        AgentExecutor: The executor for the created agent.
-    """
-    # Each worker node will be given a name and some tools.
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            (
-                "system",
-                system_prompt,
-            ),
-            MessagesPlaceholder(variable_name="messages"),
-            MessagesPlaceholder(variable_name="agent_scratchpad"),
-        ]
-    )
-    agent = create_openai_tools_agent(llm, tools, prompt)
-    executor = AgentExecutor(agent=agent, tools=tools)
-    return executor
-
-
 def supervisor_node(state):
     """
     The supervisor node is the main node in the graph. It is responsible for routing to the correct agent.
     """
-    chat_history = state.get("messages", [])
+    chat_history = state["messages"] or [HumanMessage(content=state["user_input"])]
     llm = init_chat_model(**state["config"])
     supervisor_chain = get_supervisor_chain(llm)
-    if not chat_history:
-        chat_history.append(HumanMessage(state["user_input"]))
     output = supervisor_chain.invoke({"messages": chat_history})
     next_action = output.next_action
 
@@ -83,9 +48,13 @@ def supervisor_node(state):
     ):
         next_action = "ChatBot"
 
-    state["next_step"] = next_action
-    state["messages"] = chat_history
-    return state
+    update = {"next_step": next_action}
+    if not state["messages"]:
+        # Graph was invoked with no `messages` at all (only `user_input`);
+        # seed history with the synthesized HumanMessage above so it's part
+        # of the persisted state going forward.
+        update["messages"] = chat_history
+    return update
 
 
 def job_search_node(state):
@@ -95,17 +64,14 @@ def job_search_node(state):
     """
     llm = init_chat_model(**state["config"])
     search_agent = create_agent(
-        llm, [get_job_search_tool()], get_search_agent_prompt_template()
+        model=llm, tools=[linkedin_job_search], system_prompt=get_search_agent_prompt_template()
     )
-    chat_history = state.get("messages", [])
     state["callback"].write_agent_name("JobSearcher Agent 💼")
     output = search_agent.invoke(
-        {"messages": chat_history}, {"callbacks": [state["callback"]]}
+        {"messages": state["messages"]}, {"callbacks": [state["callback"]]}
     )
-    state["messages"].append(
-        HumanMessage(content=output.get("output"), name="JobSearcher")
-    )
-    return state
+    result_message = output["messages"][-1]
+    return {"messages": [HumanMessage(content=result_message.content, name="JobSearcher")]}
 
 
 def resume_analyzer_node(state):
@@ -115,16 +81,14 @@ def resume_analyzer_node(state):
     """
     llm = init_chat_model(**state["config"])
     analyzer_agent = create_agent(
-        llm, [ResumeExtractorTool()], get_analyzer_agent_prompt_template()
+        model=llm, tools=[ResumeExtractorTool()], system_prompt=get_analyzer_agent_prompt_template()
     )
     state["callback"].write_agent_name("ResumeAnalyzer Agent 📄")
     output = analyzer_agent.invoke(
         {"messages": state["messages"]}, {"callbacks": [state["callback"]]}
     )
-    state["messages"].append(
-        HumanMessage(content=output.get("output"), name="ResumeAnalyzer")
-    )
-    return state
+    result_message = output["messages"][-1]
+    return {"messages": [HumanMessage(content=result_message.content, name="ResumeAnalyzer")]}
 
 
 def cover_letter_generator_node(state):
@@ -134,25 +98,25 @@ def cover_letter_generator_node(state):
     """
     llm = init_chat_model(**state["config"])
     generator_agent = create_agent(
-        llm,
-        [
+        model=llm,
+        tools=[
             generate_letter_for_specific_job,
             save_cover_letter_for_specific_job,
             ResumeExtractorTool(),
         ],
-        get_generator_agent_prompt_template(),
+        system_prompt=get_generator_agent_prompt_template(),
     )
 
     state["callback"].write_agent_name("CoverLetterGenerator Agent ✍️")
     output = generator_agent.invoke(
         {"messages": state["messages"]}, {"callbacks": [state["callback"]]}
     )
-    state["messages"].append(
-        HumanMessage(
-            content=output.get("output"),
-            name="CoverLetterGenerator",
-        )
-    )
+    result_message = output["messages"][-1]
+    return {
+        "messages": [
+            HumanMessage(content=result_message.content, name="CoverLetterGenerator")
+        ]
+    }
 
 
 def web_research_node(state):
@@ -162,18 +126,16 @@ def web_research_node(state):
     """
     llm = init_chat_model(**state["config"])
     research_agent = create_agent(
-        llm,
-        [get_google_search_results, scrape_website],
-        researcher_agent_prompt_template(),
+        model=llm,
+        tools=[get_google_search_results, scrape_website],
+        system_prompt=researcher_agent_prompt_template(),
     )
     state["callback"].write_agent_name("WebResearcher Agent 🔍")
     output = research_agent.invoke(
         {"messages": state["messages"]}, {"callbacks": [state["callback"]]}
     )
-    state["messages"].append(
-        HumanMessage(content=output.get("output"), name="WebResearcher")
-    )
-    return state
+    result_message = output["messages"][-1]
+    return {"messages": [HumanMessage(content=result_message.content, name="WebResearcher")]}
 
 
 def chatbot_node(state):
@@ -181,8 +143,7 @@ def chatbot_node(state):
     finish_chain = get_finish_chain(llm)
     state["callback"].write_agent_name("ChatBot Agent 🤖")
     output = finish_chain.invoke({"messages": state["messages"]})
-    state["messages"].append(AIMessage(content=output.content, name="ChatBot"))
-    return state
+    return {"messages": [AIMessage(content=output.content, name="ChatBot")]}
 
 
 def define_graph():
@@ -223,10 +184,13 @@ def define_graph():
     return graph
 
 
-# The agent state is the input to each node in the graph
-class AgentState(TypedDict):
+# The agent state is the input to each node in the graph. Subclassing
+# MessagesState gives `messages` the standard `add_messages` reducer (append
+# by default, replace-by-id for updates), so nodes return partial updates
+# (e.g. {"messages": [new_message]}) instead of mutating and returning the
+# full state dict each time.
+class AgentState(MessagesState):
     user_input: str
-    messages: list[BaseMessage]
     next_step: str
     config: dict
     callback: Any

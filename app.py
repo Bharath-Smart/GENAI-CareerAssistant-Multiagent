@@ -1,14 +1,8 @@
-from typing import Callable, TypeVar
 import os
-import inspect
 import streamlit as st
 import streamlit_analytics2 as streamlit_analytics
 from dotenv import load_dotenv
-from streamlit_chat import message
-from streamlit_pills import pills
-from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 from streamlit.delta_generator import DeltaGenerator
-from langchain_community.chat_message_histories import StreamlitChatMessageHistory
 from langchain_core.messages import HumanMessage
 from custom_callback_handler import CustomStreamlitCallbackHandler
 from agents import define_graph
@@ -130,11 +124,19 @@ st.sidebar.markdown(
 
 # Create the agent flow
 flow_graph = define_graph()
-message_history = StreamlitChatMessageHistory()
 
 # Initialize session state variables
-if "active_option_index" not in st.session_state:
-    st.session_state["active_option_index"] = None
+if "chat_messages" not in st.session_state:
+    # Full LangChain message history (list[BaseMessage]) that is fed into
+    # and returned from the graph. Replaces
+    # langchain_community.chat_message_histories.StreamlitChatMessageHistory,
+    # which was itself just a thin wrapper around a st.session_state list.
+    st.session_state["chat_messages"] = []
+if "pills_reset_counter" not in st.session_state:
+    # st.pills has no imperative "clear selection" method; giving the widget
+    # a new `key` on the next rerun is the documented way to reset it, so we
+    # bump this counter after each submitted query.
+    st.session_state["pills_reset_counter"] = 0
 if "interaction_history" not in st.session_state:
     st.session_state["interaction_history"] = []
 if "response_history" not in st.session_state:
@@ -148,45 +150,27 @@ input_section = st.container()
 
 # Define functions used above
 def initialize_callback_handler(main_container: DeltaGenerator):
-    V = TypeVar("V")
-
-    def wrap_function(func: Callable[..., V]) -> Callable[..., V]:
-        context = get_script_run_ctx()
-
-        def wrapped(*args, **kwargs) -> V:
-            add_script_run_ctx(ctx=context)
-            return func(*args, **kwargs)
-
-        return wrapped
-
-    streamlit_callback_instance = CustomStreamlitCallbackHandler(
-        parent_container=main_container
-    )
-
-    for method_name, method in inspect.getmembers(
-        streamlit_callback_instance, predicate=inspect.ismethod
-    ):
-        setattr(streamlit_callback_instance, method_name, wrap_function(method))
-
-    return streamlit_callback_instance
+    # write_agent_name is called synchronously from within each graph node
+    # (on the main script thread), so no ScriptRunContext propagation is
+    # needed here (unlike the old langchain_community StreamlitCallbackHandler,
+    # which streamed tokens from background threads and required it).
+    return CustomStreamlitCallbackHandler(parent_container=main_container)
 
 def execute_chat_conversation(user_input, graph):
-    callback_handler_instance = initialize_callback_handler(st.container())
-    callback_handler = callback_handler_instance
+    callback_handler = initialize_callback_handler(st.container())
     try:
         output = graph.invoke(
             {
-                "messages": list(message_history.messages) + [HumanMessage(content=user_input)],
+                "messages": st.session_state["chat_messages"] + [HumanMessage(content=user_input)],
                 "user_input": user_input,
                 "config": settings,
                 "callback": callback_handler,
             },
             {"recursion_limit": 30},
         )
-        message_output = output.get("messages")[-1]
         messages_list = output.get("messages")
-        message_history.clear()
-        message_history.add_messages(messages_list)
+        message_output = messages_list[-1]
+        st.session_state["chat_messages"] = messages_list
 
         return message_output.content
     except Exception as exc:
@@ -196,7 +180,7 @@ def execute_chat_conversation(user_input, graph):
 if st.button("Clear Chat"):
     st.session_state["user_query_history"] = []
     st.session_state["response_history"] = []
-    message_history.clear()
+    st.session_state["chat_messages"] = []
     st.rerun()  # Refresh the app to reflect the cleared chat
 
 # for tracking the query.
@@ -205,27 +189,24 @@ streamlit_analytics.start_tracking()
 # Display chat interface
 with input_section:
     options = [
-        "Identify top trends in the tech industry relevant to gen ai",
-        "Find emerging technologies and their potential impact on job opportunities",
-        "Summarize my resume",
-        "Create a career path visualization based on my skills and interests from my resume",
-        "GenAI Jobs at Microsoft",
-        "Job Search GenAI jobs in India.",
-        "Analyze my resume and suggest a suitable job role and search for relevant job listings",
-        "Generate a cover letter for my resume.",
+        "🔍 Identify top trends in the tech industry relevant to gen ai",
+        "🌐 Find emerging technologies and their potential impact on job opportunities",
+        "📝 Summarize my resume",
+        "📈 Create a career path visualization based on my skills and interests from my resume",
+        "💼 GenAI Jobs at Microsoft",
+        "🌟 Job Search GenAI jobs in India.",
+        "✉️ Analyze my resume and suggest a suitable job role and search for relevant job listings",
+        "🧠 Generate a cover letter for my resume.",
     ]
-    icons = ["🔍", "🌐", "📝", "📈", "💼", "🌟", "✉️", "🧠  "]
-
-    selected_query = pills(
+    # st.pills auto-detects a leading emoji as an icon and returns the
+    # remaining text as the selected value, so no manual icon stripping is
+    # needed here (unlike the old streamlit_pills, which needed a separate
+    # `icons=` list).
+    selected_query = st.pills(
         "Pick a question for query:",
         options,
-        clearable=None,  # type: ignore
-        icons=icons,
-        index=st.session_state["active_option_index"],
-        key="pills",
+        key=f"pills_{st.session_state['pills_reset_counter']}",
     )
-    if selected_query:
-        st.session_state["active_option_index"] = options.index(selected_query)
 
     # Display text input form
     with st.form(key="query_form", clear_on_submit=True):
@@ -250,22 +231,15 @@ with input_section:
             st.session_state["user_query_history"].append(user_input_query)
             st.session_state["response_history"].append(chat_output)
             st.session_state["last_input"] = user_input_query  # Save the latest input
-            st.session_state["active_option_index"] = None
+            st.session_state["pills_reset_counter"] += 1
 
 # Display chat history
 if st.session_state["response_history"]:
     with conversation_container:
         for i in range(len(st.session_state["response_history"])):
-            message(
-                st.session_state["user_query_history"][i],
-                is_user=True,
-                key=str(i) + "_user",
-                avatar_style="fun-emoji",
-            )
-            message(
-                st.session_state["response_history"][i],
-                key=str(i),
-                avatar_style="bottts",
-            )
+            with st.chat_message("user"):
+                st.write(st.session_state["user_query_history"][i])
+            with st.chat_message("assistant"):
+                st.write(st.session_state["response_history"][i])
 
 streamlit_analytics.stop_tracking()

@@ -2,8 +2,7 @@
 import os
 import asyncio
 from dotenv import load_dotenv
-from pydantic import Field
-from langchain_core.tools import BaseTool, tool, StructuredTool
+from langchain_core.tools import BaseTool, tool
 from data_loader import load_resume, write_cover_letter_to_doc
 from schemas import JobSearchInput
 from search import get_job_ids, fetch_all_jobs
@@ -12,7 +11,11 @@ from utils import FireCrawlClient, SerperClient
 load_dotenv()
 
 
-# Job search tools
+# Job search tool.
+# Uses @tool(args_schema=...) directly (the current documented pattern for a
+# plain function with an explicit schema), replacing the previous
+# StructuredTool.from_function(...) wrapper/factory.
+@tool("JobSearchTool", args_schema=JobSearchInput)
 def linkedin_job_search(
     keywords: str,
     location_name: str = None,
@@ -38,21 +41,6 @@ def linkedin_job_search(
     )
     job_desc = asyncio.run(fetch_all_jobs(job_ids))
     return job_desc
-
-
-def get_job_search_tool():
-    """
-    Create a tool for the JobPipeline function.
-    Returns:
-    StructuredTool: A structured tool for the JobPipeline function.
-    """
-    job_pipeline_tool = StructuredTool.from_function(
-        func=linkedin_job_search,
-        name="JobSearchTool",
-        description="Search LinkedIn for job postings based on specified criteria. Returns detailed job listings",
-        args_schema=JobSearchInput,
-    )
-    return job_pipeline_tool
 
 
 # Resume Extraction Tool
@@ -106,12 +94,12 @@ def save_cover_letter_for_specific_job(
 
 
 # Web Search Tools
-@tool("google_search")
-def get_google_search_results(
-    query: str = Field(..., description="Search query for web")
-) -> str:
-    """
-    search the web for the given query and return the search results.
+@tool("google_search", parse_docstring=True)
+def get_google_search_results(query: str) -> str:
+    """Search the web for the given query and return the search results.
+
+    Args:
+        query: Search query for web.
     """
     response = SerperClient().search(query)
     items = response.get("items")
@@ -135,10 +123,12 @@ def get_google_search_results(
     return content
 
 
-@tool("scrape_website")
-def scrape_website(url: str = Field(..., description="Url to be scraped")) -> str:
-    """
-    Scrape the content of a website and return the text.
+@tool("scrape_website", parse_docstring=True)
+def scrape_website(url: str) -> str:
+    """Scrape the content of a website and return the text.
+
+    Args:
+        url: Url to be scraped.
     """
     try:
         content = FireCrawlClient().scrape(url)

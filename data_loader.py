@@ -1,5 +1,5 @@
+import pymupdf
 from docx import Document
-from langchain_community.document_loaders import PyMuPDFLoader
 
 
 def load_resume(file_path):
@@ -12,11 +12,12 @@ def load_resume(file_path):
     Returns:
     str: The content of the CV file.
     """
-    loader = PyMuPDFLoader(file_path)
-    pages = loader.load()
+    # Direct PyMuPDF API (current recommended `import pymupdf`, not `fitz`),
+    # replacing the deprecated langchain_community PyMuPDFLoader wrapper.
     page_content = ""
-    for page in pages:
-        page_content += page.page_content
+    with pymupdf.open(file_path) as doc:
+        for page in doc:
+            page_content += page.get_text()
     return page_content
 
 
