@@ -14,8 +14,7 @@ class SerperClient:
     A client for performing Google searches using the Serper API.
 
     Calls the Serper REST API (https://serper.dev) directly, since Serper has
-    no official Python SDK; this replaces the deprecated
-    `langchain_community.utilities.GoogleSerperAPIWrapper`.
+    no official Python SDK.
     """
 
     def __init__(self, serper_api_key: str = os.environ.get("SERPER_API_KEY")) -> None:
@@ -54,7 +53,7 @@ class SerperClient:
         return data
 
 
-class FireCrawlClient:
+class FirecrawlClient:
 
     def __init__(
         self, firecrawl_api_key: str = os.environ.get("FIRECRAWL_API_KEY")
@@ -63,7 +62,6 @@ class FireCrawlClient:
 
     def scrape(self, url):
         # Current Firecrawl Python SDK (v2): Firecrawl(...).scrape(url, formats=[...])
-        # replaces the deprecated langchain_community FireCrawlLoader.
         doc = Firecrawl(api_key=self.firecrawl_api_key).scrape(url, formats=["markdown"])
         page_content = doc.markdown or ""
 

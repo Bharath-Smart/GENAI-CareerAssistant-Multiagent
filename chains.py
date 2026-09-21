@@ -1,6 +1,5 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.language_models.chat_models import BaseChatModel
-from typing import List
 
 from members import get_team_members_details
 from prompts import get_supervisor_prompt_template, get_finish_step_prompt

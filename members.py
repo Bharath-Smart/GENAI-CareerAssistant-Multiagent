@@ -1,13 +1,13 @@
-def get_team_members_details() -> dict:
+def get_team_members_details() -> list[dict[str, str]]:
     """
-    Returns a dictionary containing details of team members.
+    Returns a list of dictionaries containing details of team members.
 
     Each team member is represented as a dictionary with the following keys:
     - name: The name of the team member.
     - description: A brief description of the team member's role and responsibilities.
 
     Returns:
-    A dictionary containing details of team members.
+    A list of dictionaries containing details of team members.
     """
     members_dict = [
         {

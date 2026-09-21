@@ -12,8 +12,7 @@ def load_resume(file_path):
     Returns:
     str: The content of the CV file.
     """
-    # Direct PyMuPDF API (current recommended `import pymupdf`, not `fitz`),
-    # replacing the deprecated langchain_community PyMuPDFLoader wrapper.
+    # Current recommended PyMuPDF API: `import pymupdf` (not `fitz`).
     page_content = ""
     with pymupdf.open(file_path) as doc:
         for page in doc:

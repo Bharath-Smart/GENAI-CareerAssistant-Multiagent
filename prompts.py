@@ -80,7 +80,7 @@ def get_generator_agent_prompt_template():
     return generator_agent_prompt
 
 
-def researcher_agent_prompt_template():
+def get_researcher_agent_prompt_template():
     researcher_prompt = """
     You are a web researcher agent tasked with finding detailed information on a specific topic.
     Use the provided tools to gather information and summarize the key points.

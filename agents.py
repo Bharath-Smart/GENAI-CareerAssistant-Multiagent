@@ -1,14 +1,14 @@
 from typing import Any
 from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain.messages import HumanMessage, AIMessage
 
 from langgraph.graph import StateGraph, MessagesState, END
 from dotenv import load_dotenv
 from chains import get_finish_chain, get_supervisor_chain
 from tools import (
     linkedin_job_search,
-    ResumeExtractorTool,
+    extract_resume,
     generate_letter_for_specific_job,
     get_google_search_results,
     save_cover_letter_for_specific_job,
@@ -17,7 +17,7 @@ from tools import (
 from prompts import (
     get_search_agent_prompt_template,
     get_analyzer_agent_prompt_template,
-    researcher_agent_prompt_template,
+    get_researcher_agent_prompt_template,
     get_generator_agent_prompt_template,
 )
 
@@ -81,7 +81,7 @@ def resume_analyzer_node(state):
     """
     llm = init_chat_model(**state["config"])
     analyzer_agent = create_agent(
-        model=llm, tools=[ResumeExtractorTool()], system_prompt=get_analyzer_agent_prompt_template()
+        model=llm, tools=[extract_resume], system_prompt=get_analyzer_agent_prompt_template()
     )
     state["callback"].write_agent_name("ResumeAnalyzer Agent 📄")
     output = analyzer_agent.invoke(
@@ -102,7 +102,7 @@ def cover_letter_generator_node(state):
         tools=[
             generate_letter_for_specific_job,
             save_cover_letter_for_specific_job,
-            ResumeExtractorTool(),
+            extract_resume,
         ],
         system_prompt=get_generator_agent_prompt_template(),
     )
@@ -128,7 +128,7 @@ def web_research_node(state):
     research_agent = create_agent(
         model=llm,
         tools=[get_google_search_results, scrape_website],
-        system_prompt=researcher_agent_prompt_template(),
+        system_prompt=get_researcher_agent_prompt_template(),
     )
     state["callback"].write_agent_name("WebResearcher Agent 🔍")
     output = research_agent.invoke(

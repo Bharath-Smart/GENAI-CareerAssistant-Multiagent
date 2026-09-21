@@ -2,19 +2,16 @@
 import os
 import asyncio
 from dotenv import load_dotenv
-from langchain_core.tools import BaseTool, tool
+from langchain_core.tools import tool
 from data_loader import load_resume, write_cover_letter_to_doc
 from schemas import JobSearchInput
 from search import get_job_ids, fetch_all_jobs
-from utils import FireCrawlClient, SerperClient
+from utils import FirecrawlClient, SerperClient
 
 load_dotenv()
 
 
 # Job search tool.
-# Uses @tool(args_schema=...) directly (the current documented pattern for a
-# plain function with an explicit schema), replacing the previous
-# StructuredTool.from_function(...) wrapper/factory.
 @tool("JobSearchTool", args_schema=JobSearchInput)
 def linkedin_job_search(
     keywords: str,
@@ -44,28 +41,17 @@ def linkedin_job_search(
 
 
 # Resume Extraction Tool
-class ResumeExtractorTool(BaseTool):
+@tool("ResumeExtractor")
+def extract_resume() -> str:
     """
-    Extract the content of a resume from a PDF file.
+    Extract the content of uploaded resume from a PDF file.
+
+    Extract and structure job-relevant information from an uploaded CV.
+
     Returns:
-        dict: The extracted content of the resume.
+    str: The content of the highlight skills, experience, and qualifications relevant to job applications, omitting personal information
     """
-    name: str = "ResumeExtractor"
-    description: str = "Extract the content of uploaded resume from a PDF file."
-
-    def extract_resume(self) -> str:
-        """
-        Extract resume content from a PDF file.
-        Extract and structure job-relevant information from an uploaded CV.
-
-        Returns:
-        str: The content of the highlight skills, experience, and qualifications relevant to job applications, omitting personal information
-        """
-        text = load_resume("temp/resume.pdf")
-        return text
-
-    def _run(self) -> dict:
-        return self.extract_resume()
+    return load_resume("temp/resume.pdf")
 
 
 # Cover Letter Generation Tool
@@ -131,7 +117,7 @@ def scrape_website(url: str) -> str:
         url: Url to be scraped.
     """
     try:
-        content = FireCrawlClient().scrape(url)
+        content = FirecrawlClient().scrape(url)
     except Exception as exc:
         return f"Failed to scrape {url}"
     return content

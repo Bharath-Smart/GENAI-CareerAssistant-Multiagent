@@ -3,7 +3,7 @@ import streamlit as st
 import streamlit_analytics2 as streamlit_analytics
 from dotenv import load_dotenv
 from streamlit.delta_generator import DeltaGenerator
-from langchain_core.messages import HumanMessage
+from langchain.messages import HumanMessage
 from custom_callback_handler import CustomStreamlitCallbackHandler
 from agents import define_graph
 import shutil
@@ -128,17 +128,13 @@ flow_graph = define_graph()
 # Initialize session state variables
 if "chat_messages" not in st.session_state:
     # Full LangChain message history (list[BaseMessage]) that is fed into
-    # and returned from the graph. Replaces
-    # langchain_community.chat_message_histories.StreamlitChatMessageHistory,
-    # which was itself just a thin wrapper around a st.session_state list.
+    # and returned from the graph.
     st.session_state["chat_messages"] = []
 if "pills_reset_counter" not in st.session_state:
     # st.pills has no imperative "clear selection" method; giving the widget
     # a new `key` on the next rerun is the documented way to reset it, so we
     # bump this counter after each submitted query.
     st.session_state["pills_reset_counter"] = 0
-if "interaction_history" not in st.session_state:
-    st.session_state["interaction_history"] = []
 if "response_history" not in st.session_state:
     st.session_state["response_history"] = ["Hello! How can I assist you today?"]
 if "user_query_history" not in st.session_state:
@@ -152,8 +148,7 @@ input_section = st.container()
 def initialize_callback_handler(main_container: DeltaGenerator):
     # write_agent_name is called synchronously from within each graph node
     # (on the main script thread), so no ScriptRunContext propagation is
-    # needed here (unlike the old langchain_community StreamlitCallbackHandler,
-    # which streamed tokens from background threads and required it).
+    # needed here.
     return CustomStreamlitCallbackHandler(parent_container=main_container)
 
 def execute_chat_conversation(user_input, graph):
@@ -200,8 +195,7 @@ with input_section:
     ]
     # st.pills auto-detects a leading emoji as an icon and returns the
     # remaining text as the selected value, so no manual icon stripping is
-    # needed here (unlike the old streamlit_pills, which needed a separate
-    # `icons=` list).
+    # needed here.
     selected_query = st.pills(
         "Pick a question for query:",
         options,
@@ -230,7 +224,6 @@ with input_section:
             chat_output = execute_chat_conversation(user_input_query, flow_graph)
             st.session_state["user_query_history"].append(user_input_query)
             st.session_state["response_history"].append(chat_output)
-            st.session_state["last_input"] = user_input_query  # Save the latest input
             st.session_state["pills_reset_counter"] += 1
 
 # Display chat history
