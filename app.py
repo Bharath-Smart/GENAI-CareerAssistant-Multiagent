@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from streamlit.delta_generator import DeltaGenerator
 from langchain.messages import HumanMessage
 from custom_callback_handler import CustomStreamlitCallbackHandler
-from agents import define_graph
+from agents import GraphContext, define_graph
 from data_loader import load_resume
 
 load_dotenv()
@@ -151,11 +151,9 @@ def execute_chat_conversation(user_input, graph):
         output = graph.invoke(
             {
                 "messages": st.session_state["chat_messages"] + [HumanMessage(content=user_input)],
-                "user_input": user_input,
-                "config": settings,
-                "callback": callback_handler,
             },
-            {"recursion_limit": 30},
+            {"callbacks": [callback_handler], "recursion_limit": 30},
+            context=GraphContext(llm_config=settings),
         )
         messages_list = output.get("messages")
         message_output = messages_list[-1]

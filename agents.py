@@ -1,9 +1,14 @@
-from typing import Any
+import json
+from dataclasses import dataclass
 from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
-from langchain.messages import HumanMessage, AIMessage
+from langchain.messages import AIMessage, SystemMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
 
 from langgraph.graph import StateGraph, MessagesState, END
+from langgraph.runtime import Runtime
+from langgraph.types import Command
+from typing_extensions import NotRequired
 from dotenv import load_dotenv
 from chains import get_finish_chain, get_supervisor_chain
 from tools import (
@@ -24,79 +29,162 @@ from prompts import (
 load_dotenv()
 
 
-def supervisor_node(state):
+@dataclass
+class GraphContext:
+    llm_config: dict
+
+
+WORKERS = {
+    "ResumeAnalyzer",
+    "CoverLetterGenerator",
+    "JobSearcher",
+    "WebResearcher",
+    "ChatBot",
+}
+
+
+def _resolve_next_action(next_action: str, state: dict) -> str:
+    completed_workers = set(state.get("completed_workers", []))
+    if next_action not in WORKERS and next_action != "Finish":
+        next_action = "Finish"
+    if next_action == "Finish" and not completed_workers:
+        return "ChatBot"
+    if "ChatBot" in completed_workers:
+        return "Finish"
+    if next_action in completed_workers:
+        return "ChatBot"
+    return next_action
+
+
+def _mark_worker_completed(state: dict, worker_name: str) -> list[str]:
+    completed_workers = list(state.get("completed_workers", []))
+    if worker_name not in completed_workers:
+        completed_workers.append(worker_name)
+    return completed_workers
+
+
+def _write_agent_name(config: RunnableConfig, name: str) -> None:
+    callbacks = config.get("callbacks", [])
+    if hasattr(callbacks, "handlers"):
+        callbacks = callbacks.handlers
+    if isinstance(callbacks, list):
+        for callback in callbacks:
+            if hasattr(callback, "write_agent_name"):
+                callback.write_agent_name(name)
+
+
+def _llm(runtime: Runtime[GraphContext]):
+    return init_chat_model(**runtime.context.llm_config)
+
+
+def supervisor_node(
+    state: "AgentState",
+    runtime: Runtime[GraphContext],
+    config: RunnableConfig,
+):
     """
     The supervisor node is the main node in the graph. It is responsible for routing to the correct agent.
     """
-    chat_history = state["messages"] or [HumanMessage(content=state["user_input"])]
-    llm = init_chat_model(**state["config"])
+    chat_history = state["messages"]
+    if not chat_history:
+        raise ValueError("The graph requires the current user message in messages.")
+    llm = _llm(runtime)
     supervisor_chain = get_supervisor_chain(llm)
-    output = supervisor_chain.invoke({"messages": chat_history})
-    next_action = output.next_action
-
-    # Guard against ending the workflow (Finish -> END) before any worker has
-    # ever processed the current user turn. The last message is still the raw,
-    # unprocessed HumanMessage (no `name`) that app.py just added for this turn
-    # in that case, so Finish would terminate the graph with nothing but the
-    # user's own message as output. ChatBot is the designated fallback worker
-    # for producing an actual conversational reply, so route there instead.
-    last_message = chat_history[-1]
-    if (
-        next_action == "Finish"
-        and isinstance(last_message, HumanMessage)
-        and not last_message.name
-    ):
-        next_action = "ChatBot"
-
-    update = {"next_step": next_action}
-    if not state["messages"]:
-        # Graph was invoked with no `messages` at all (only `user_input`);
-        # seed history with the synthesized HumanMessage above so it's part
-        # of the persisted state going forward.
-        update["messages"] = chat_history
-    return update
+    output = supervisor_chain.invoke({"messages": chat_history}, config)
+    next_action = _resolve_next_action(output.next_action, state)
+    destination = END if next_action == "Finish" else next_action
+    return Command(goto=destination)
 
 
-def job_search_node(state):
+def job_search_node(
+    state: "AgentState",
+    runtime: Runtime[GraphContext],
+    config: RunnableConfig,
+):
     """
     This Node is responsible for searching for jobs from linkedin or any other job search engine.
     Tools: Job Search Tool
     """
-    llm = init_chat_model(**state["config"])
+    llm = _llm(runtime)
     search_agent = create_agent(
         model=llm, tools=[linkedin_job_search], system_prompt=get_search_agent_prompt_template()
     )
-    state["callback"].write_agent_name("JobSearcher Agent 💼")
+    _write_agent_name(config, "JobSearcher Agent 💼")
     output = search_agent.invoke(
-        {"messages": state["messages"]}, {"callbacks": [state["callback"]]}
+        {"messages": state["messages"]}, config
     )
     result_message = output["messages"][-1]
-    return {"messages": [HumanMessage(content=result_message.content, name="JobSearcher")]}
+    job_results = []
+    for message in output["messages"]:
+        if isinstance(message, ToolMessage) and message.name == "JobSearchTool":
+            content = message.content
+            if isinstance(content, str):
+                try:
+                    content = json.loads(content)
+                except json.JSONDecodeError:
+                    content = []
+            if isinstance(content, list):
+                job_results = content
+    return {
+        "messages": [
+            AIMessage(content=result_message.content, name="JobSearcher")
+        ],
+        "job_results": job_results,
+        "completed_workers": _mark_worker_completed(state, "JobSearcher"),
+    }
 
 
-def resume_analyzer_node(state):
+def resume_analyzer_node(
+    state: "AgentState",
+    runtime: Runtime[GraphContext],
+    config: RunnableConfig,
+):
     """
     Resume analyzer node will analyze the resume and return the output.
     Tools: Resume Extractor
     """
-    llm = init_chat_model(**state["config"])
+    llm = _llm(runtime)
     analyzer_agent = create_agent(
         model=llm, tools=[extract_resume], system_prompt=get_analyzer_agent_prompt_template()
     )
-    state["callback"].write_agent_name("ResumeAnalyzer Agent 📄")
+    _write_agent_name(config, "ResumeAnalyzer Agent 📄")
     output = analyzer_agent.invoke(
-        {"messages": state["messages"]}, {"callbacks": [state["callback"]]}
+        {"messages": state["messages"]}, config
     )
     result_message = output["messages"][-1]
-    return {"messages": [HumanMessage(content=result_message.content, name="ResumeAnalyzer")]}
+    return {
+        "messages": [
+            AIMessage(content=result_message.content, name="ResumeAnalyzer")
+        ],
+        "resume_analysis": result_message.content,
+        "completed_workers": _mark_worker_completed(state, "ResumeAnalyzer"),
+    }
 
 
-def cover_letter_generator_node(state):
+def cover_letter_generator_node(
+    state: "AgentState",
+    runtime: Runtime[GraphContext],
+    config: RunnableConfig,
+):
     """
     Node which handles the generation of cover letters.
     Tools: Cover Letter Generator, Cover Letter Saver
     """
-    llm = init_chat_model(**state["config"])
+    selected_job = state.get("selected_job")
+    if not selected_job:
+        return {
+            "messages": [
+                AIMessage(
+                    content="A selected job is required before generating a cover letter.",
+                    name="CoverLetterGenerator",
+                )
+            ],
+            "completed_workers": _mark_worker_completed(
+                state, "CoverLetterGenerator"
+            ),
+        }
+
+    llm = _llm(runtime)
     generator_agent = create_agent(
         model=llm,
         tools=[
@@ -107,43 +195,68 @@ def cover_letter_generator_node(state):
         system_prompt=get_generator_agent_prompt_template(),
     )
 
-    state["callback"].write_agent_name("CoverLetterGenerator Agent ✍️")
+    _write_agent_name(config, "CoverLetterGenerator Agent ✍️")
+    selected_job_message = SystemMessage(
+        content=(
+            "Use this explicitly selected job data for the cover letter. "
+            f"Do not infer or replace it:\n{json.dumps(selected_job)}"
+        )
+    )
     output = generator_agent.invoke(
-        {"messages": state["messages"]}, {"callbacks": [state["callback"]]}
+        {"messages": [*state["messages"], selected_job_message]}, config
     )
     result_message = output["messages"][-1]
     return {
         "messages": [
-            HumanMessage(content=result_message.content, name="CoverLetterGenerator")
-        ]
+            AIMessage(content=result_message.content, name="CoverLetterGenerator")
+        ],
+        "completed_workers": _mark_worker_completed(
+            state, "CoverLetterGenerator"
+        ),
     }
 
 
-def web_research_node(state):
+def web_research_node(
+    state: "AgentState",
+    runtime: Runtime[GraphContext],
+    config: RunnableConfig,
+):
     """
     Node which handles the web research.
     Tools: Google Search, Web Scraper
     """
-    llm = init_chat_model(**state["config"])
+    llm = _llm(runtime)
     research_agent = create_agent(
         model=llm,
         tools=[get_google_search_results, scrape_website],
         system_prompt=get_researcher_agent_prompt_template(),
     )
-    state["callback"].write_agent_name("WebResearcher Agent 🔍")
+    _write_agent_name(config, "WebResearcher Agent 🔍")
     output = research_agent.invoke(
-        {"messages": state["messages"]}, {"callbacks": [state["callback"]]}
+        {"messages": state["messages"]}, config
     )
     result_message = output["messages"][-1]
-    return {"messages": [HumanMessage(content=result_message.content, name="WebResearcher")]}
+    return {
+        "messages": [
+            AIMessage(content=result_message.content, name="WebResearcher")
+        ],
+        "completed_workers": _mark_worker_completed(state, "WebResearcher"),
+    }
 
 
-def chatbot_node(state):
-    llm = init_chat_model(**state["config"])
+def chatbot_node(
+    state: "AgentState",
+    runtime: Runtime[GraphContext],
+    config: RunnableConfig,
+):
+    llm = _llm(runtime)
     finish_chain = get_finish_chain(llm)
-    state["callback"].write_agent_name("ChatBot Agent 🤖")
-    output = finish_chain.invoke({"messages": state["messages"]})
-    return {"messages": [AIMessage(content=output.content, name="ChatBot")]}
+    _write_agent_name(config, "ChatBot Agent 🤖")
+    output = finish_chain.invoke({"messages": state["messages"]}, config)
+    return {
+        "messages": [AIMessage(content=output.content, name="ChatBot")],
+        "completed_workers": _mark_worker_completed(state, "ChatBot"),
+    }
 
 
 def define_graph():
@@ -152,11 +265,11 @@ def define_graph():
     Returns:
         graph (StateGraph): The compiled graph representing the workflow.
     """
-    workflow = StateGraph(AgentState)
+    workflow = StateGraph(AgentState, context_schema=GraphContext)
     workflow.add_node("ResumeAnalyzer", resume_analyzer_node)
     workflow.add_node("JobSearcher", job_search_node)
     workflow.add_node("CoverLetterGenerator", cover_letter_generator_node)
-    workflow.add_node("Supervisor", supervisor_node)
+    workflow.add_node("Supervisor", supervisor_node, destinations=tuple(WORKERS))
     workflow.add_node("WebResearcher", web_research_node)
     workflow.add_node("ChatBot", chatbot_node)
 
@@ -173,13 +286,6 @@ def define_graph():
         # We want our workers to ALWAYS "report back" to the supervisor when done
         workflow.add_edge(member, "Supervisor")
 
-    conditional_map = {k: k for k in members}
-    conditional_map["Finish"] = END
-
-    workflow.add_conditional_edges(
-        "Supervisor", lambda x: x["next_step"], conditional_map
-    )
-
     graph = workflow.compile()
     return graph
 
@@ -190,7 +296,7 @@ def define_graph():
 # (e.g. {"messages": [new_message]}) instead of mutating and returning the
 # full state dict each time.
 class AgentState(MessagesState):
-    user_input: str
-    next_step: str
-    config: dict
-    callback: Any
+    completed_workers: NotRequired[list[str]]
+    resume_analysis: NotRequired[str]
+    job_results: NotRequired[list[dict]]
+    selected_job: NotRequired[dict]
