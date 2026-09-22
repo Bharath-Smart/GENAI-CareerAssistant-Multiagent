@@ -1,3 +1,5 @@
+import os
+
 import pymupdf
 from docx import Document
 
@@ -12,11 +14,20 @@ def load_resume(file_path):
     Returns:
     str: The content of the CV file.
     """
-    # Current recommended PyMuPDF API: `import pymupdf` (not `fitz`).
+    if not os.path.isfile(file_path):
+        raise FileNotFoundError("No resume has been uploaded.")
+
     page_content = ""
-    with pymupdf.open(file_path) as doc:
-        for page in doc:
-            page_content += page.get_text()
+    try:
+        with pymupdf.open(file_path) as doc:
+            for page in doc:
+                page_content += page.get_text()
+    except (pymupdf.FileDataError, ValueError) as exc:
+        raise ValueError("The uploaded resume is not a readable PDF.") from exc
+
+    if not page_content.strip():
+        raise ValueError("The uploaded resume PDF contains no readable text.")
+
     return page_content
 
 
@@ -31,6 +42,10 @@ def write_cover_letter_to_doc(text, filename="temp/cover_letter.docx"):
     Returns:
     str: The filename and path of the saved document.
     """
+    output_directory = os.path.dirname(filename)
+    if output_directory:
+        os.makedirs(output_directory, exist_ok=True)
+
     doc = Document()
     paragraphs = text.split("\n")
     # Add each paragraph to the document

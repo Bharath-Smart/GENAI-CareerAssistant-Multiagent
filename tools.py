@@ -1,6 +1,7 @@
 # define tools
 import os
 import asyncio
+import re
 from dotenv import load_dotenv
 from langchain_core.tools import tool
 from data_loader import load_resume, write_cover_letter_to_doc
@@ -15,16 +16,16 @@ load_dotenv()
 @tool("JobSearchTool", args_schema=JobSearchInput)
 def linkedin_job_search(
     keywords: str,
-    location_name: str = None,
-    job_type: str = None,
-    limit: int = 5,
-    employment_type: str = None,
-    listed_at=None,
-    experience=None,
-    distance=None,
-) -> dict:  # type: ignore
+    location_name: str = "India",
+    job_type: list[str] | None = None,
+    limit: int = 10,
+    employment_type: list[str] | None = None,
+    listed_at: int | str = 86400,
+    experience: list[str] | None = None,
+    distance: int | str = 100,
+) -> list[dict]:
     """
-    Search LinkedIn for job postings based on specified criteria. Returns detailed job listings.
+    Search LinkedIn for job postings and return normalized job records.
     """
     job_ids = get_job_ids(
         keywords=keywords,
@@ -36,8 +37,7 @@ def linkedin_job_search(
         experience=experience,
         distance=distance,
     )
-    job_desc = asyncio.run(fetch_all_jobs(job_ids))
-    return job_desc
+    return asyncio.run(fetch_all_jobs(job_ids))
 
 
 # Resume Extraction Tool
@@ -51,7 +51,10 @@ def extract_resume() -> str:
     Returns:
     str: The content of the highlight skills, experience, and qualifications relevant to job applications, omitting personal information
     """
-    return load_resume("temp/resume.pdf")
+    try:
+        return load_resume("temp/resume.pdf")
+    except (FileNotFoundError, ValueError) as exc:
+        return f"Resume unavailable: {exc}"
 
 
 # Cover Letter Generation Tool
@@ -61,7 +64,17 @@ def generate_letter_for_specific_job(resume_details: str, job_details: str) -> d
     Generate a tailored cover letter using the provided CV and job details. This function constructs the letter as plain text.
     returns: A dictionary containing the job and resume details for generating the cover letter.
     """
-    return {"job_details": job_details, "resume_details": resume_details}
+    if not resume_details or not resume_details.strip():
+        return {"error": "Resume details are required to generate a cover letter."}
+    if resume_details.startswith("Resume unavailable:"):
+        return {"error": resume_details}
+    if not job_details or not job_details.strip():
+        return {"error": "Job details are required to generate a cover letter."}
+    return {
+        "resume_details": resume_details,
+        "job_details": job_details,
+        "ready": True,
+    }
 
 
 @tool
@@ -73,7 +86,12 @@ def save_cover_letter_for_specific_job(
     Params:
     cover_letter_content: The combine information of resume and job details to tailor the cover letter.
     """
-    filename = f"temp/{company_name}_cover_letter.docx"
+    if not cover_letter_content or not cover_letter_content.strip():
+        return "Unable to save an empty cover letter."
+    safe_company_name = re.sub(r"[^A-Za-z0-9._-]+", "_", company_name).strip("._")
+    if not safe_company_name:
+        return "Unable to save the cover letter without a company name."
+    filename = f"temp/{safe_company_name}_cover_letter.docx"
     file = write_cover_letter_to_doc(cover_letter_content, filename)
     abs_path = os.path.abspath(file)
     return f"Here is the download link: {abs_path}"

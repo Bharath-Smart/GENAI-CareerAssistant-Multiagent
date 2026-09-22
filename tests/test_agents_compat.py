@@ -14,7 +14,7 @@ Run with: python -m unittest discover -s tests -v
 pytest was added, since the project's installed dependency set does not
 currently include one.)
 """
-import os
+import tempfile
 import unittest
 
 
@@ -117,18 +117,20 @@ class TestPdfTextExtraction(unittest.TestCase):
     """
     Functional (no network) regression test for the data_loader.py migration
     from langchain_community's PyMuPDFLoader to direct `pymupdf.open(...)`.
-    Uses the repo's own dummy_resume.pdf, so no external resume is required.
+    Uses a temporary PDF fixture, so no real or dummy resume is required.
     """
 
     def test_load_resume_extracts_nonempty_text(self):
         from data_loader import load_resume
+        import pymupdf
 
-        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        dummy_resume_path = os.path.join(repo_root, "dummy_resume.pdf")
-        if not os.path.exists(dummy_resume_path):
-            self.skipTest("dummy_resume.pdf not present in repo root")
-
-        text = load_resume(dummy_resume_path)
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as resume_file:
+            document = pymupdf.open()
+            page = document.new_page()
+            page.insert_text((72, 72), "Resume fixture")
+            document.save(resume_file.name)
+            document.close()
+            text = load_resume(resume_file.name)
         self.assertIsInstance(text, str)
         self.assertGreater(len(text.strip()), 0)
 

@@ -1,4 +1,6 @@
 import os
+import re
+import tempfile
 import streamlit as st
 import streamlit_analytics2 as streamlit_analytics
 from dotenv import load_dotenv
@@ -6,7 +8,7 @@ from streamlit.delta_generator import DeltaGenerator
 from langchain.messages import HumanMessage
 from custom_callback_handler import CustomStreamlitCallbackHandler
 from agents import define_graph
-import shutil
+from data_loader import load_resume
 
 load_dotenv()
 
@@ -24,37 +26,41 @@ os.environ["LINKEDIN_SEARCH"] = os.getenv("LINKEDIN_JOB_SEARCH", "")
 # Page configuration
 st.set_page_config(layout="wide")
 st.title("GenAI Career Assistant - 👨‍💼")
-st.markdown("[Connect with me on LinkedIn](https://www.linkedin.com/in/aman-varyani-885725181/)")
 
 streamlit_analytics.start_tracking()
 
 # Setup directories and paths
 temp_dir = "temp"
-dummy_resume_path = os.path.abspath("dummy_resume.pdf")
 
 if not os.path.exists(temp_dir):
     os.makedirs(temp_dir)
 
-# Add dummy resume if it does not exist
-if not os.path.exists(dummy_resume_path):
-    default_resume_path = "path/to/your/dummy_resume.pdf"
-    shutil.copy(default_resume_path, dummy_resume_path)
-
 # Sidebar - File Upload
 uploaded_document = st.sidebar.file_uploader("Upload Your Resume", type="pdf")
 
-if not uploaded_document:
-    uploaded_document = open(dummy_resume_path, "rb")
-    st.sidebar.write("Using a dummy resume for demonstration purposes. ")
-    st.sidebar.markdown(f"[View Dummy Resume]({'https://drive.google.com/file/d/1vTdtIPXEjqGyVgUgCO6HLiG9TSPcJ5eM/view?usp=sharing'})", unsafe_allow_html=True)
-    
-bytes_data = uploaded_document.read()
+resume_path = os.path.join(temp_dir, "resume.pdf")
+if uploaded_document is not None:
+    candidate_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=temp_dir, suffix=".pdf", delete=False
+        ) as candidate_file:
+            candidate_file.write(uploaded_document.getvalue())
+            candidate_path = candidate_file.name
+        load_resume(candidate_path)
+        os.replace(candidate_path, resume_path)
+        st.session_state["active_resume_path"] = resume_path
+        st.sidebar.success("Resume uploaded.")
+    except (FileNotFoundError, ValueError) as exc:
+        if candidate_path and os.path.exists(candidate_path):
+            os.remove(candidate_path)
+        st.sidebar.error(str(exc))
 
-filepath = os.path.join(temp_dir, "resume.pdf")
-with open(filepath, "wb") as f:
-    f.write(bytes_data)
-
-st.markdown("**Resume uploaded successfully!**")
+active_resume_path = st.session_state.get("active_resume_path")
+if active_resume_path == resume_path and os.path.exists(resume_path):
+    st.sidebar.info("Using the resume uploaded earlier in this session.")
+elif not active_resume_path:
+    st.sidebar.info("Upload a PDF resume to use resume analysis and cover letters.")
 
 # Sidebar - Service Provider Selection
 service_provider = st.sidebar.selectbox(
@@ -63,7 +69,6 @@ service_provider = st.sidebar.selectbox(
 )
 streamlit_analytics.stop_tracking()
 
-# Not to track the key
 if service_provider == "openai":
     # Sidebar - OpenAI Configuration
     api_key_openai = st.sidebar.text_input(
@@ -109,17 +114,6 @@ st.sidebar.markdown(
     This multi-agent system works best with OpenAI. llama 3.1 may not always produce optimal results.\n
     Any key provided will not be stored or shared it will be used only for the current session.
     """
-)
-st.sidebar.markdown(
-    """
-    <div style="padding:10px 0;">
-        If you like the project, give a 
-        <a href="https://github.com/amanv1906/GENAI-CareerAssistant-Multiagent" target="_blank" style="text-decoration:none;">
-            ⭐ on GitHub
-        </a>
-    </div>
-    """,
-    unsafe_allow_html=True,
 )
 
 # Create the agent flow
@@ -171,6 +165,11 @@ def execute_chat_conversation(user_input, graph):
     except Exception as exc:
         return ":( Sorry, Some error occurred. Can you please try again?"
 
+
+def query_requires_resume(user_input: str) -> bool:
+    return bool(re.search(r"\b(resume|cv|cover letter)\b", user_input, re.IGNORECASE))
+
+
 # Clear Chat functionality
 if st.button("Clear Chat"):
     st.session_state["user_query_history"] = []
@@ -213,14 +212,15 @@ with input_section:
         submit_query_button = st.form_submit_button(label="Send")
 
     if submit_query_button:
-        if not uploaded_document:
-            st.error("Please upload your resume before submitting a query.")
+        if query_requires_resume(user_input_query) and not (
+            active_resume_path == resume_path and os.path.isfile(resume_path)
+        ):
+            st.error("Please upload a resume before submitting a query.")
 
         elif service_provider == "openai" and not st.session_state["OPENAI_API_KEY"]:
             st.error("Please enter your OpenAI API key before submitting a query.")
 
         elif user_input_query:
-            # Process the query as usual if resume is uploaded
             chat_output = execute_chat_conversation(user_input_query, flow_graph)
             st.session_state["user_query_history"].append(user_input_query)
             st.session_state["response_history"].append(chat_output)

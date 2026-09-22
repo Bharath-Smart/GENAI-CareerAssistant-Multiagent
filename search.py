@@ -56,7 +56,7 @@ def build_linkedin_job_url(
         if isinstance(employment_type, str):
             employment_type = [employment_type]
         employment_type = ",".join(employment_type)
-        query_params["f_WT"] = employment_type
+        query_params["f_JT"] = employment_type
 
     if experience_level:
         if isinstance(experience_level, str):
@@ -67,8 +67,7 @@ def build_linkedin_job_url(
     if job_type:
         if isinstance(job_type, str):
             job_type = [job_type]
-        job_type = ",".join(job_type)
-        query_params["f_WT"] = job_type
+        query_params["f_WT"] = ",".join(job_type)
 
     # Build the complete URL
     query_string = urllib.parse.urlencode(query_params)
@@ -78,16 +77,10 @@ def build_linkedin_job_url(
 
 
 def validate_job_search_params(agent_input: Union[str, list], value_dict_mapping: dict):
-
     if isinstance(agent_input, list):
-        for i, input_str in enumerate(agent_input.copy()):
-            if not value_dict_mapping.get(input_str):
-                agent_input.pop(i)
+        return [item for item in agent_input if item in value_dict_mapping]
     elif isinstance(agent_input, str) and not value_dict_mapping.get(agent_input):
         agent_input = None
-    else:
-        agent_input = None
-
     return agent_input
 
 
@@ -95,20 +88,13 @@ def get_job_ids_from_linkedin_api(
     keywords: str,
     location_name: str,
     employment_type=None,
-    limit: Optional[int] = 5,
+    limit: Optional[int] = 10,
     job_type=None,
     experience=None,
     listed_at=86400,
-    distance=None,
+    distance=100,
 ):
     try:
-        job_type = validate_job_search_params(job_type, job_type_mapping)
-        employment_type = validate_job_search_params(
-            employment_type, employment_type_mapping
-        )
-        experience_level = validate_job_search_params(
-            experience, experience_type_mapping
-        )
         api = Linkedin(os.getenv("LINKEDIN_EMAIL"), os.getenv("LINKEDIN_PASS"))
         job_postings = api.search_jobs(
             keywords=keywords,
@@ -116,12 +102,16 @@ def get_job_ids_from_linkedin_api(
             location_name=location_name,
             remote=job_type,
             limit=limit,
-            experience=experience_level,
+            experience=experience,
             listed_at=listed_at,
             distance=distance,
         )
-        # Extracting just the part after "jobPosting:" from the trackingUrn and the title using list comprehension
-        job_ids = [job["trackingUrn"].split("jobPosting:")[1] for job in job_postings]
+        job_ids = []
+        for job in job_postings:
+            tracking_urn = job.get("trackingUrn", "")
+            if "jobPosting:" not in tracking_urn:
+                continue
+            job_ids.append(tracking_urn.split("jobPosting:", 1)[1])
         return job_ids
     except Exception as e:
         print(f"Error in fetching job ids from LinkedIn API -> {e}")
@@ -131,7 +121,7 @@ def get_job_ids_from_linkedin_api(
 
 def get_job_ids(
     keywords: str,
-    location_name: str,
+    location_name: str = "India",
     employment_type: Optional[
         List[
             Literal[
@@ -144,9 +134,9 @@ def get_job_ids(
                 "other",
             ]
         ]
-    ] = None,
+    ] = ["full-time"],
     limit: Optional[int] = 10,
-    job_type: Optional[List[Literal["onsite", "remote", "hybrid"]]] = None,
+    job_type: Optional[List[Literal["onsite", "remote", "hybrid"]]] = ["onsite"],
     experience: Optional[
         List[
             Literal[
@@ -158,10 +148,16 @@ def get_job_ids(
                 "executive",
             ]
         ]
-    ] = None,
+    ] = ["internship"],
     listed_at: Optional[Union[int, str]] = 86400,
-    distance=None,
+    distance: Optional[Union[int, str]] = 100,
 ):
+    employment_type = validate_job_search_params(
+        employment_type, employment_type_mapping
+    )
+    job_type = validate_job_search_params(job_type, job_type_mapping)
+    experience = validate_job_search_params(experience, experience_type_mapping)
+
     if os.environ.get("LINKEDIN_SEARCH") == "linkedin_api":
         return get_job_ids_from_linkedin_api(
             keywords=keywords,
@@ -175,7 +171,6 @@ def get_job_ids(
         )
 
     try:
-        # Construct the URL for LinkedIn job search
         job_url = build_linkedin_job_url(
             keywords=keywords,
             location=location_name,
@@ -189,18 +184,20 @@ def get_job_ids(
             job_url, timeout=30, headers={"User-Agent": "Mozilla/5.0"}
         )
 
-        # Get the HTML, parse the response and find all list items(jobs postings)
+        # Parse the HTML and ignore cards that do not contain a usable ID.
         list_data = response.text
         list_soup = BeautifulSoup(list_data, "html.parser")
         page_jobs = list_soup.find_all("li")
 
-        # Create an empty list to store the job postings
         job_ids = []
-        # Itetrate through job postings to find job ids
         for job in page_jobs:
             base_card_div = job.find("div", {"class": "base-card"})
-            job_id = base_card_div.get("data-entity-urn").split(":")[3]
-            job_ids.append(job_id)
+            if base_card_div is None:
+                continue
+            entity_urn = base_card_div.get("data-entity-urn", "")
+            entity_parts = entity_urn.split(":")
+            if len(entity_parts) > 3 and entity_parts[3]:
+                job_ids.append(entity_parts[3])
         return job_ids
     except Exception as e:
         print(f"Error in fetching job ids from LinkedIn -> {e}")
@@ -216,7 +213,15 @@ async def fetch_job_details(session, job_id):
         job_soup = BeautifulSoup(await response.text(), "html.parser")
 
         # Create a dictionary to store job details
-        job_post = {}
+        job_post = {
+            "job_title": "",
+            "company_name": "",
+            "job_location": "",
+            "job_description": "",
+            "apply_url": "",
+            "posted_age": "",
+            "num_applicants": "",
+        }
 
         # Try to extract and store the job title
         try:
@@ -247,11 +252,11 @@ async def fetch_job_details(session, job_id):
 
         # Try to extract and store the time posted
         try:
-            job_post["time_posted"] = job_soup.find(
+            job_post["posted_age"] = job_soup.find(
                 "span", {"class": "posted-time-ago__text topcard__flavor--metadata"}
             ).text.strip()
         except Exception as exc:
-            job_post["time_posted"] = ""
+            job_post["posted_age"] = ""
 
         # Try to extract and store the number of applicants
         try:
@@ -269,18 +274,17 @@ async def fetch_job_details(session, job_id):
             job_description = job_soup.find(
                 "div", {"class": "decorated-job-posting__details"}
             ).text.strip()
-            job_post["job_desc_text"] = job_description
+            job_post["job_description"] = job_description
         except Exception as exc:
-            job_post["job_desc_text"] = ""
+            job_post["job_description"] = ""
 
         try:
             # Try to extract and store the apply link
             apply_link_tag = job_soup.find("a", class_="topcard__link")
             if apply_link_tag:
-                apply_link = apply_link_tag.get("href")
-                job_post["apply_link"] = apply_link
+                job_post["apply_url"] = apply_link_tag.get("href", "")
         except Exception as exc:
-            job_post["apply_link"] = ""
+            job_post["apply_url"] = ""
 
         return job_post
 
@@ -308,24 +312,28 @@ async def get_job_details_from_linkedin_api(job_id):
             )
             .get("companyResolutionResult", {})
             .get("url", ""),
-            "job_desc_text": job_data.get("description", {}).get("text", ""),
+            "job_description": job_data.get("description", {}).get("text", ""),
             "work_remote_allowed": job_data.get("workRemoteAllowed", ""),
             "job_title": job_data.get("title", ""),
-            "company_apply_url": job_data.get("applyMethod", {})
+            "apply_url": job_data.get("applyMethod", {})
             .get("com.linkedin.voyager.jobs.OffsiteApply", {})
             .get("companyApplyUrl", ""),
             "job_location": job_data.get("formattedLocation", ""),
+            "posted_age": "",
+            "num_applicants": "",
         }
     except Exception as e:
         # Handle exceptions or errors in fetching or parsing the job data
         job_data_dict = {
             "company_name": "",
             "company_url": "",
-            "job_desc_text": "",
+            "job_description": "",
             "work_remote_allowed": "",
             "job_title": "",
-            "apply_link": "",
+            "apply_url": "",
             "job_location": "",
+            "posted_age": "",
+            "num_applicants": "",
         }
 
     return job_data_dict
