@@ -1,9 +1,8 @@
-import json
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from langchain.messages import AIMessage, HumanMessage, ToolMessage
+from langchain.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
 from agents import (
@@ -14,6 +13,13 @@ from agents import (
     job_search_node,
     supervisor_node,
     define_graph,
+)
+from schemas import (
+    CoverLetterResult,
+    JobRecord,
+    JobSearchResponse,
+    ResearchResult,
+    ResumeAnalysis,
 )
 
 
@@ -78,14 +84,10 @@ class TestWorkerContracts(unittest.TestCase):
         records = [{"job_title": "Engineer", "company_name": "Acme"}]
         fake_agent = SimpleNamespace(
             invoke=lambda _input, _config: {
-                "messages": [
-                    ToolMessage(
-                        name="JobSearchTool",
-                        content=json.dumps(records),
-                        tool_call_id="test-call",
-                    ),
-                    AIMessage(content="formatted by worker"),
-                ]
+                "messages": [AIMessage(content="formatted by worker")],
+                "structured_response": JobSearchResponse(
+                    jobs=[JobRecord(**records[0])]
+                ),
             }
         )
         state = {"messages": [HumanMessage(content="find jobs")]}
@@ -94,7 +96,10 @@ class TestWorkerContracts(unittest.TestCase):
             "agents.create_agent", return_value=fake_agent
         ):
             result = job_search_node(state, runtime, {})
-        self.assertEqual(result["job_results"], records)
+        self.assertEqual(result["job_results"][0]["job_title"], records[0]["job_title"])
+        self.assertEqual(
+            result["job_results"][0]["company_name"], records[0]["company_name"]
+        )
         self.assertEqual(result["completed_workers"], ["JobSearcher"])
 
     def test_cover_letter_requires_explicit_selected_job(self):
@@ -109,7 +114,12 @@ class TestWorkerContracts(unittest.TestCase):
 
         def invoke(inputs, _config):
             captured["messages"] = inputs["messages"]
-            return {"messages": [AIMessage(content="letter generated")]}
+            return {
+                "messages": [AIMessage(content="letter generated")],
+                "structured_response": CoverLetterResult(
+                    cover_letter="letter generated"
+                ),
+            }
 
         state = {
             "messages": [HumanMessage(content="write a cover letter")],
@@ -153,28 +163,33 @@ class TestCompiledGraphRouting(unittest.TestCase):
         def worker_agent(*, tools, **_kwargs):
             if "ResumeExtractor" in {tool.name for tool in tools}:
                 worker_name = "ResumeAnalyzer"
+                structured_response = ResumeAnalysis(
+                    skills=["Python"],
+                    experience="Test experience",
+                    qualifications="Test qualification",
+                    recommended_role="Test role",
+                )
             else:
                 worker_name = "WebResearcher"
+                structured_response = ResearchResult(summary="Test research")
 
             return SimpleNamespace(
                 invoke=lambda _input, _config: {
-                    "messages": [AIMessage(content=f"{worker_name} result")]
+                    "messages": [AIMessage(content=f"{worker_name} result")],
+                    "structured_response": structured_response,
                 }
             )
 
-        def finish_chain(_llm):
-            return SimpleNamespace(
-                invoke=lambda _input, _config: (
-                    chatbot_calls.append("ChatBot")
-                    or AIMessage(content="ChatBot result")
-                )
+        fake_llm = SimpleNamespace(
+            invoke=lambda _input, _config: (
+                chatbot_calls.append("ChatBot")
+                or AIMessage(content="ChatBot result")
             )
+        )
 
-        with patch("agents._llm"), patch(
+        with patch("agents._llm", return_value=fake_llm), patch(
             "agents.get_supervisor_chain", side_effect=supervisor_chain
-        ), patch("agents.create_agent", side_effect=worker_agent), patch(
-            "agents.get_finish_chain", side_effect=finish_chain
-        ):
+        ), patch("agents.create_agent", side_effect=worker_agent):
             return define_graph().invoke(
                 {"messages": [HumanMessage(content="perform the task")]},
                 {"recursion_limit": 20},
@@ -189,10 +204,8 @@ class TestCompiledGraphRouting(unittest.TestCase):
             output["completed_workers"],
             ["ResumeAnalyzer", "WebResearcher"],
         )
-        self.assertEqual(
-            [message.content for message in output["messages"][-2:]],
-            ["ResumeAnalyzer result", "WebResearcher result"],
-        )
+        self.assertIn("Python", output["messages"][-2].content)
+        self.assertEqual(output["messages"][-1].content, "Test research")
 
     def test_worker_chatbot_finish_reaches_end(self):
         output, chatbot_calls = self._run_graph(

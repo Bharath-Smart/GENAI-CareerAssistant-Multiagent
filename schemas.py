@@ -2,7 +2,7 @@ from typing import List, Literal, Optional, Union
 from pydantic import BaseModel, Field
 
 
-class RouteSchema(BaseModel):
+class RouteOutput(BaseModel):
     next_action: Literal[
         "ResumeAnalyzer",
         "CoverLetterGenerator",
@@ -14,6 +14,62 @@ class RouteSchema(BaseModel):
         ...,
         title="Next",
         description="Select the next role",
+    )
+
+
+RouteSchema = RouteOutput
+
+
+class ResumeAnalysis(BaseModel):
+    skills: list[str] = Field(
+        default_factory=list,
+        description="Relevant technical and professional skills from the resume.",
+    )
+    experience: str = Field(
+        default="",
+        description="Concise summary of relevant professional experience.",
+    )
+    qualifications: str = Field(
+        default="",
+        description="Concise summary of relevant qualifications and education.",
+    )
+    recommended_role: str = Field(
+        default="",
+        description="Most suitable role recommendation based on the resume.",
+    )
+
+
+class JobRecord(BaseModel):
+    job_title: str = ""
+    company_name: str = ""
+    job_description: str = ""
+    apply_url: str = ""
+    posted_age: str = ""
+    num_applicants: str = ""
+
+
+class JobSearchResponse(BaseModel):
+    jobs: list[JobRecord] = Field(
+        default_factory=list,
+        description="Normalized job records returned by the job search.",
+    )
+
+
+class ResearchResult(BaseModel):
+    summary: str = Field(
+        default="",
+        description="Concise answer based on the web research results.",
+    )
+
+
+class CoverLetterResult(BaseModel):
+    cover_letter: str = Field(
+        default="",
+        description="The generated cover letter content.",
+    )
+    download_link: str = Field(
+        default="",
+        description="The generated document download link, if available.",
     )
 
 

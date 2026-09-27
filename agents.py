@@ -2,7 +2,7 @@ import json
 from dataclasses import dataclass
 from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
-from langchain.messages import AIMessage, SystemMessage, ToolMessage
+from langchain.messages import AIMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from langgraph.graph import StateGraph, MessagesState, END
@@ -10,7 +10,13 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command
 from typing_extensions import NotRequired
 from dotenv import load_dotenv
-from chains import get_finish_chain, get_supervisor_chain
+from chains import get_supervisor_chain
+from schemas import (
+    CoverLetterResult,
+    JobSearchResponse,
+    ResearchResult,
+    ResumeAnalysis,
+)
 from tools import (
     linkedin_job_search,
     extract_resume,
@@ -24,6 +30,7 @@ from prompts import (
     get_analyzer_agent_prompt_template,
     get_researcher_agent_prompt_template,
     get_generator_agent_prompt_template,
+    get_finish_step_prompt,
 )
 
 load_dotenv()
@@ -77,6 +84,37 @@ def _llm(runtime: Runtime[GraphContext]):
     return init_chat_model(**runtime.context.llm_config)
 
 
+def _structured_response(output: dict, schema):
+    value = output["structured_response"]
+    if isinstance(value, schema):
+        return value
+    return schema.model_validate(value)
+
+
+def _render_resume_analysis(analysis: ResumeAnalysis) -> str:
+    return (
+        f"**Skills:** {', '.join(analysis.skills) or 'Not specified'}\n\n"
+        f"**Experience:** {analysis.experience or 'Not specified'}\n\n"
+        f"**Qualifications:** {analysis.qualifications or 'Not specified'}\n\n"
+        f"**Recommended role:** {analysis.recommended_role or 'Not specified'}"
+    )
+
+
+def _render_job_results(response: JobSearchResponse) -> str:
+    if not response.jobs:
+        return "No matching job listings were found."
+    rows = [
+        "| Job Title | Company | Job Description | Apply URL |",
+        "| --- | --- | --- | --- |",
+    ]
+    rows.extend(
+        f"| {job.job_title} | {job.company_name} | "
+        f"{job.job_description} | {job.apply_url} |"
+        for job in response.jobs
+    )
+    return "\n".join(rows)
+
+
 def supervisor_node(
     state: "AgentState",
     runtime: Runtime[GraphContext],
@@ -107,28 +145,20 @@ def job_search_node(
     """
     llm = _llm(runtime)
     search_agent = create_agent(
-        model=llm, tools=[linkedin_job_search], system_prompt=get_search_agent_prompt_template()
+        model=llm,
+        tools=[linkedin_job_search],
+        system_prompt=get_search_agent_prompt_template(),
+        response_format=JobSearchResponse,
     )
     _write_agent_name(config, "JobSearcher Agent 💼")
     output = search_agent.invoke(
         {"messages": state["messages"]}, config
     )
-    result_message = output["messages"][-1]
-    job_results = []
-    for message in output["messages"]:
-        if isinstance(message, ToolMessage) and message.name == "JobSearchTool":
-            content = message.content
-            if isinstance(content, str):
-                try:
-                    content = json.loads(content)
-                except json.JSONDecodeError:
-                    content = []
-            if isinstance(content, list):
-                job_results = content
+    structured = _structured_response(output, JobSearchResponse)
+    job_results = [job.model_dump() for job in structured.jobs]
+    result_content = _render_job_results(structured)
     return {
-        "messages": [
-            AIMessage(content=result_message.content, name="JobSearcher")
-        ],
+        "messages": [AIMessage(content=result_content, name="JobSearcher")],
         "job_results": job_results,
         "completed_workers": _mark_worker_completed(state, "JobSearcher"),
     }
@@ -145,18 +175,24 @@ def resume_analyzer_node(
     """
     llm = _llm(runtime)
     analyzer_agent = create_agent(
-        model=llm, tools=[extract_resume], system_prompt=get_analyzer_agent_prompt_template()
+        model=llm,
+        tools=[extract_resume],
+        system_prompt=get_analyzer_agent_prompt_template(),
+        response_format=ResumeAnalysis,
     )
     _write_agent_name(config, "ResumeAnalyzer Agent 📄")
     output = analyzer_agent.invoke(
         {"messages": state["messages"]}, config
     )
-    result_message = output["messages"][-1]
+    structured = _structured_response(output, ResumeAnalysis)
+    result_content = (
+        _render_resume_analysis(structured)
+        if structured
+        else output["messages"][-1].content
+    )
     return {
-        "messages": [
-            AIMessage(content=result_message.content, name="ResumeAnalyzer")
-        ],
-        "resume_analysis": result_message.content,
+        "messages": [AIMessage(content=result_content, name="ResumeAnalyzer")],
+        "resume_analysis": result_content,
         "completed_workers": _mark_worker_completed(state, "ResumeAnalyzer"),
     }
 
@@ -193,6 +229,7 @@ def cover_letter_generator_node(
             extract_resume,
         ],
         system_prompt=get_generator_agent_prompt_template(),
+        response_format=CoverLetterResult,
     )
 
     _write_agent_name(config, "CoverLetterGenerator Agent ✍️")
@@ -205,11 +242,15 @@ def cover_letter_generator_node(
     output = generator_agent.invoke(
         {"messages": [*state["messages"], selected_job_message]}, config
     )
-    result_message = output["messages"][-1]
+    structured = _structured_response(output, CoverLetterResult)
+    result_content = (
+        structured.cover_letter
+        + (f"\n\n{structured.download_link}" if structured.download_link else "")
+        if structured
+        else output["messages"][-1].content
+    )
     return {
-        "messages": [
-            AIMessage(content=result_message.content, name="CoverLetterGenerator")
-        ],
+        "messages": [AIMessage(content=result_content, name="CoverLetterGenerator")],
         "completed_workers": _mark_worker_completed(
             state, "CoverLetterGenerator"
         ),
@@ -230,16 +271,18 @@ def web_research_node(
         model=llm,
         tools=[get_google_search_results, scrape_website],
         system_prompt=get_researcher_agent_prompt_template(),
+        response_format=ResearchResult,
     )
     _write_agent_name(config, "WebResearcher Agent 🔍")
     output = research_agent.invoke(
         {"messages": state["messages"]}, config
     )
-    result_message = output["messages"][-1]
+    structured = _structured_response(output, ResearchResult)
+    result_content = (
+        structured.summary if structured else output["messages"][-1].content
+    )
     return {
-        "messages": [
-            AIMessage(content=result_message.content, name="WebResearcher")
-        ],
+        "messages": [AIMessage(content=result_content, name="WebResearcher")],
         "completed_workers": _mark_worker_completed(state, "WebResearcher"),
     }
 
@@ -250,9 +293,11 @@ def chatbot_node(
     config: RunnableConfig,
 ):
     llm = _llm(runtime)
-    finish_chain = get_finish_chain(llm)
     _write_agent_name(config, "ChatBot Agent 🤖")
-    output = finish_chain.invoke({"messages": state["messages"]}, config)
+    output = llm.invoke(
+        [SystemMessage(content=get_finish_step_prompt()), *state["messages"]],
+        config,
+    )
     return {
         "messages": [AIMessage(content=output.content, name="ChatBot")],
         "completed_workers": _mark_worker_completed(state, "ChatBot"),
